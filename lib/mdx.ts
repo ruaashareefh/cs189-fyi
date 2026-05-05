@@ -22,8 +22,7 @@ const prettyCodeOptions = {
 
 // ── Shared MDX options (plugins only, no components) ───────────────
 // Components are passed per-call so server pages can inject custom ones.
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const MDX_PLUGIN_OPTIONS: any = {
+const MDX_PLUGIN_OPTIONS: Record<string, any> = {
   remarkPlugins: [remarkMath, remarkGfm],
   rehypePlugins: [rehypeKatex, [rehypePrettyCode, prettyCodeOptions]],
 }
@@ -32,7 +31,6 @@ const MDX_PLUGIN_OPTIONS: any = {
 
 async function compile(
   source: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   components: Record<string, any> = {}
 ) {
   return compileMDX({
@@ -46,7 +44,6 @@ async function compile(
 
 export async function getLectureContent(
   slug: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   components: Record<string, any> = {}
 ) {
   const filePath = path.join(CONTENT_ROOT, 'lectures', `${slug}.mdx`)
@@ -64,7 +61,6 @@ export async function getLectureContent(
 
 export async function getTopicContent(
   slug: string,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   components: Record<string, any> = {}
 ) {
   const filePath = path.join(CONTENT_ROOT, 'topics', `${slug}.mdx`)

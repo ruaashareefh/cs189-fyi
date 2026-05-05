@@ -1,0 +1,576 @@
+---
+lecture: 16
+title: "Entropy, Information & Logistic Regression"
+description: "Entropy and information theory from first principles. KL divergence, cross entropy, and the central result: MLE for logistic regression is exactly minimizing cross entropy loss."
+tags:
+  - { label: "Information Theory", type: "math" }
+  - { label: "Cross Entropy", type: "proof" }
+  - { label: "Logistic Regression", type: "concept" }
+  - { label: "Softmax", type: "concept" }
+readTime: 50
+status: published
+date: "2025-03-03"
+prereqs:
+  - "04-gda"
+  - "13-sgd"
+---
+
+<Callout variant="note" title="Contents">
+  1. Why Are We Doing This?
+  2. Entropy: How to Measure Information
+  3. Shannon's Compression Theorem
+  4. The Horse Race Problem
+  5. KL Divergence
+  6. Cross Entropy
+  7. Connecting All Three
+  8. Logistic Regression Recap
+  9. Negative Log Likelihood = Cross Entropy Loss
+  10. Multiclass Logistic Regression & Softmax
+  11. Visualizing What Logistic Regression Learns
+  12. Summary
+</Callout>
+
+---
+
+## 1. Why Are We Doing This?
+
+Entropy, KL divergence, and cross entropy are not separate topics bolted onto logistic regression. They are the same thing seen from different angles. The entire point of this lecture is:
+
+<Callout variant="key">
+  When you train logistic regression by maximizing likelihood, you are minimizing cross entropy. These are identical.
+</Callout>
+
+To get there, you first need to understand what information actually is, and where the cross entropy formula comes from. None of this is hard. It just needs to be built from scratch.
+
+---
+
+## 2. Entropy: How to Measure Information
+
+### The Seattle rain setup
+
+It rains in Seattle with probability 80% each day, independently. You observe 100 days of weather as a binary sequence — 1 = rain, 0 = no rain.
+
+Naive answer: 100 bits (one bit per day). But that is wrong, or at least dumb. This sequence has structure: ones dominate. You can compress it. The question is by how much, and entropy answers that exactly.
+
+<Callout variant="note" title="Shannon's key insight">
+  The tool that Shannon had and Boltzmann didn't is the concept of a **random variable**. Information theory is about how much information is in a random variable, not in a fixed string. Once framed that way, the answer is precise and beautiful.
+</Callout>
+
+### The Alan-Claude compression game
+
+**Rules:** Before they part, both know the statistics of the rain variable (80% rain) but not the actual realization. They pre-agree on a compression scheme. Alan sends the minimum expected bits. Claude reconstructs exactly. They win if Claude's output matches Alan's input.
+
+**Question:** what is the expected number of bits Alan needs to send?
+
+<Callout variant="intuition">
+  Corner case: if it *always* rains (p=1), Alan sends zero bits. Claude already knows. There is no surprise, so no information. No randomness = no information.
+</Callout>
+
+### The entropy formula
+
+<Callout variant="definition" title="Definition of Entropy">
+  $$H(X) = -\sum_{x} p(x) \log_2 p(x)$$
+</Callout>
+
+For a Bernoulli variable (coin flip, rain/no-rain) with probability $p$:
+
+$$H(\text{Rain}) = -\bigl[p \log_2 p + (1-p)\log_2(1-p)\bigr]$$
+
+Convention you must remember: `0 log 0 = 0` by continuity (the limit of $p \log p$ as $p \to 0$ is 0). Also: `p log(p/0) = +∞` when the denominator is zero.
+
+### Three corner cases to memorize
+
+| p | H(p) | Meaning |
+|---|---|---|
+| 0 or 1 | 0 bits | Deterministic. No surprise. Perfectly compressible. |
+| 0.8 | 0.72 bits/day | 100 days compresses to ~73 bits, not 100. |
+| 0.5 | 1 bit | Fair coin. Maximum uncertainty. No compression possible. |
+
+<CollapsibleStep title="Worked: computing H when p = 0.8" variant="example">
+
+$$H = -[0.8\log_2 0.8 + 0.2\log_2 0.2]$$
+
+$$= -[0.8\times(-0.3219) + 0.2\times(-2.3219)]$$
+
+$$= -[-0.2575 - 0.4644] = \mathbf{0.722\ \text{bits per day}}$$
+
+So 100 days gives about 73 bits. Shannon's theorem says this is the exact limit.
+
+</CollapsibleStep>
+
+---
+
+## 3. Shannon's Compression Theorem
+
+<Callout variant="key">
+  Entropy is the ultimate limit to lossless compression. No one can do better.
+</Callout>
+
+### Fact 1: Log L bits to describe one item from L things
+
+If there are $L$ equally likely items, you need exactly $\log_2 L$ bits to say which one you have.
+
+| Item | Code |
+|---|---|
+| Banana | `00` |
+| Orange | `01` |
+| Apple | `10` |
+| Mango | `11` |
+
+With $L = 4$: $\log_2 4 = 2$ bits. This works when all items are equally likely. When they're not, you can do better with a clever scheme.
+
+### Fact 2: Typical sequences are all you need to handle
+
+When you observe $n$ flips of a coin with $p=0.10$, by the law of large numbers you'll see roughly 10 heads. The sequences with wildly different counts become vanishingly rare as $n$ grows. Alan and Claude only need to agree on representations for these **typical sequences**.
+
+<Callout variant="definition" title="The counting argument">
+  How many sequences have exactly 10 heads in 100 positions?
+
+  $$L = \binom{100}{10}$$
+
+  To communicate which one occurred, Alan needs $\log_2 L$ bits. It turns out:
+
+  $$\log_2 \binom{n}{k} \approx n \cdot H(k/n)$$
+
+  This is the Stirling approximation result. The log of the number of typical sequences equals $n$ times the entropy. That is why entropy is the compression limit.
+</Callout>
+
+<Callout variant="intuition">
+  Sending 10 rainy days carries exactly the same information as sending 10 sunny days. The labels don't matter. Only the probability distribution matters. This is Shannon's opening point in his 1948 paper: "I don't care about the content of information. I care about how many messages there are and what distribution applies."
+</Callout>
+
+### The asymptotic caveat
+
+Shannon's theorem is an asymptotic result. The variance of the head count grows like $\sqrt{n}$ while the mean grows like $n$, so the fraction of atypical sequences shrinks to zero as $n$ grows. For any target success probability you want, there exists a large enough $n$ where the scheme works. With $n=100$ it is approximately true; with $n=10{,}000$ it is essentially exact.
+
+---
+
+## 4. The Horse Race Problem
+
+Eight horses race. Probabilities are powers of two, which makes this a perfect example where you can check everything by hand.
+
+| Horse | Probability | Naive code (3 bits) | Optimal code | Code length |
+|---|---|---|---|---|
+| 1 | 1/2 | 000 | `0` | 1 bit |
+| 2 | 1/4 | 001 | `10` | 2 bits |
+| 3 | 1/8 | 010 | `110` | 3 bits |
+| 4 | 1/16 | 011 | `1110` | 4 bits |
+| 5 | 1/64 | 100 | `111101` | 6 bits |
+| 6 | 1/64 | 101 | `111110` | 6 bits |
+| 7 | 1/64 | 110 | `111111` | 6 bits |
+| 8 | 1/64 | 111 | `111100` | 6 bits |
+
+**Naive code** assigns each of 8 horses a fixed 3-bit string. Every race result costs exactly 3 bits, regardless of how likely that horse is.
+
+**Optimal code** assigns each horse a code of length $-\log_2 p_i$ bits. Frequent winners get short codes; rare ones get long codes. When probabilities are exact powers of 2, this gives integer lengths and the scheme is perfect.
+
+<CollapsibleStep title="Entropy of horse race = expected bits of optimal code" variant="example">
+
+**Entropy:**
+
+$$H = -\Bigl[\tfrac{1}{2}\log\tfrac{1}{2} + \tfrac{1}{4}\log\tfrac{1}{4} + \tfrac{1}{8}\log\tfrac{1}{8} + \tfrac{1}{16}\log\tfrac{1}{16} + 4\cdot\tfrac{1}{64}\log\tfrac{1}{64}\Bigr]$$
+
+$$= \tfrac{1}{2}(1) + \tfrac{1}{4}(2) + \tfrac{1}{8}(3) + \tfrac{1}{16}(4) + 4\cdot\tfrac{1}{64}(6) = 0.5+0.5+0.375+0.25+0.375 = \mathbf{2\ \text{bits}}$$
+
+**Expected bits sent using optimal code:**
+
+$$\mathbb{E}[\text{bits}] = 1\cdot\tfrac{1}{2} + 2\cdot\tfrac{1}{4} + 3\cdot\tfrac{1}{8} + 4\cdot\tfrac{1}{16} + 6\cdot\tfrac{4}{64} = 2\ \mathbf{bits}$$
+
+These match exactly. This is a perfect code. Works because probabilities are exact powers of two.
+
+</CollapsibleStep>
+
+<Callout variant="warning" title="Why 2 bits beats 3">
+  The rare horses (5–8) cost 6 bits each, worse than the naive 3. But horse 1 wins half the time and only costs 1 bit. The savings on the frequent winner overwhelm the cost on rare losers. **On average**, you pay 2 bits, not 3.
+</Callout>
+
+---
+
+## 5. KL Divergence
+
+<Callout variant="definition" title="Kullback-Leibler Divergence">
+  $$D(p \| q) = \sum_x p(x) \log \frac{p(x)}{q(x)}$$
+</Callout>
+
+<Callout variant="note" title="What it means">
+  $D(p \| q)$ = extra bits wasted when you designed your compression scheme for distribution $q$ but the data actually comes from distribution $p$.
+</Callout>
+
+KL is **not symmetric**. $D(p\|q) \neq D(q\|p)$ in general. "Designed for q, received p" is a completely different situation than the reverse. That is why we call it a divergence (directional) rather than a distance (symmetric).
+
+### Worked example: two distributions
+
+Let $p$ = fair coin: $P(1) = 1/2,\ P(0) = 1/2$. Let $q$ = always heads: $P(1) = 1,\ P(0) = 0$.
+
+**D(p ∥ q) — designed for q, received p:**
+
+$$\tfrac{1}{2}\log\tfrac{1/2}{0} + \tfrac{1}{2}\log\tfrac{1/2}{1} = +\infty$$
+
+You designed the scheme for "always rains" so you have no symbol for "no rain." When the fair coin produces a 0, you literally cannot represent it. Infinite cost.
+
+**D(q ∥ p) — designed for p, received q:**
+
+$$1\cdot\log\tfrac{1}{1/2} + 0\cdot\log\tfrac{0}{1/2} = 1 + 0 = \mathbf{1\ \text{bit}}$$
+
+You designed for a fair coin, so you always send 1 bit. But $q$ is deterministic: its true entropy is 0. You waste exactly 1 bit per observation.
+
+<Callout variant="definition" title="Always true: D(p ∥ q) ≥ 0">
+  KL divergence is always non-negative. It equals zero only when $p = q$. Makes sense: if your scheme is designed for exactly the right distribution, you waste zero bits.
+</Callout>
+
+---
+
+## 6. Cross Entropy
+
+<Callout variant="definition" title="Cross Entropy">
+  $$H(p, q) = -\sum_x p(x) \log q(x)$$
+</Callout>
+
+<Callout variant="note" title="What it means">
+  $H(p,q)$ = total bits needed to describe a random variable from distribution $p$, when the compression scheme was designed for distribution $q$.
+</Callout>
+
+### Computing the two directions
+
+**H(p, q) — designed for q (always 1), received p (fair coin):**
+
+$$-\bigl[\tfrac{1}{2}\log 1 + \tfrac{1}{2}\log 0\bigr] = +\infty$$
+
+No symbol for 0 in the $q$-scheme. Cannot represent fair coin output.
+
+**H(q, p) — designed for p (fair coin), received q (always 1):**
+
+$$-\bigl[1\cdot\log\tfrac{1}{2} + 0\cdot\log\tfrac{1}{2}\bigr] = 1\ \mathbf{bit}$$
+
+Always sends 1 bit (fair coin scheme). True cost should be 0 bits. Wasting 1 bit.
+
+### Sanity check: H(p, p) = H(p)
+
+If you plug $q = p$ into the cross entropy formula, you get ordinary entropy. When you designed the scheme for exactly the right distribution and receive from that distribution, you pay exactly the entropy cost and nothing more.
+
+---
+
+## 7. Connecting All Three
+
+Split the log of a ratio in the KL formula:
+
+$$D(p\|q) = \sum_x p(x)\log\frac{p(x)}{q(x)} = \underbrace{\sum_x p(x)\log p(x)}_{-H(p)} - \underbrace{\sum_x p(x)\log q(x)}_{-H(p,q)}$$
+
+$$\boxed{H(p,q) = H(p) + D(p\|q)}$$
+
+| Term | Meaning |
+|---|---|
+| $H(p,q)$ | Total bits to encode data from $p$ using scheme for $q$ |
+| $H(p)$ | Minimum possible bits (optimal scheme for $p$). True entropy. |
+| $D(p \| q)$ | Extra bits wasted because you used the wrong distribution $q$ |
+
+<Callout variant="definition" title="Why cross entropy ≥ entropy">
+  Since $D(p\|q) \geq 0$ always, $H(p,q) \geq H(p)$ always. Minimizing cross entropy over your model $q$ pushes $D(p\|q)$ toward zero, meaning your model's distribution matches the true distribution.
+</Callout>
+
+### Verifying with our example
+
+| Quantity | p=fair coin, q=always-1 | p=always-1, q=fair coin |
+|---|---|---|
+| H(p) entropy | 1 bit | 0 bits |
+| D(p∥q) KL | +∞ | 1 bit |
+| H(p,q) cross entropy | +∞ | 1 bit |
+| Check: H(p,q) = H(p)+D | ∞ = 1+∞ ✓ | 1 = 0+1 ✓ |
+
+---
+
+## 8. Logistic Regression Recap
+
+### Generative vs. discriminative
+
+**Discriminative:** Directly models $P(y \mid x)$. No distribution on input $x$. **Logistic regression** is this.
+
+**Generative:** Models $P(x \mid y)$, uses Bayes. Needs a prior on $x$. GDA is this. Same covariance = **LDA**. Different covariances = **QDA**.
+
+### The model
+
+$$P(y=1 \mid x) = \sigma(w^Tx) = \frac{1}{1+e^{-w^Tx}}$$
+
+The sigmoid squashes any real number into $(0, 1)$. A large positive score means high probability of class 1; a large negative score means low probability.
+
+### Working example: home insurance ad
+
+| Customer | Age | Owns Car | Owns Home | Clicked (y) |
+|---|---|---|---|---|
+| 1 | 30 | 0 | 0 | 0 |
+| 2 | 45 | 1 | 0 | 1 |
+
+<CollapsibleStep title="Customer 2 prediction with w = [0.1, 1, 10]" variant="example">
+
+**Step 1.** Score: $z_2 = 0.1\times45 + 1\times1 + 10\times0 = 4.5+1 = 5.5$
+
+**Step 2.** Probability: $\mu_2 = \sigma(5.5) = \frac{1}{1+e^{-5.5}} \approx 0.996$
+
+**Step 3.** Model says: 99.6% chance customer clicks. Training data says $y=1$. Good.
+
+</CollapsibleStep>
+
+<CollapsibleStep title="Full likelihood for this dataset" variant="example">
+
+$$L(w) = P(\text{cust 1 not clicking}) \times P(\text{cust 2 clicking})$$
+
+$$= [1 - \sigma(0.1\times30)] \times \sigma(5.5) = [1 - \sigma(3)] \times 0.996 = 0.047 \times 0.996 \approx 0.047$$
+
+Pretty low. This $w$ doesn't explain the data well. We do gradient descent to improve it.
+
+</CollapsibleStep>
+
+---
+
+## 9. Negative Log Likelihood = Cross Entropy Loss
+
+### Writing down the likelihood
+
+For each sample $i$, if $y=1$ we want $\mu_i$; if $y=0$ we want $1-\mu_i$. Compact form:
+
+$$P(\text{sample } i) = \mu_i^{y_i}(1-\mu_i)^{1-y_i}$$
+
+Full likelihood over $n$ samples (assuming independence):
+
+$$L(w) = \prod_{i=1}^n \mu_i^{y_i}(1-\mu_i)^{1-y_i}$$
+
+### Take the log (same as maximizing)
+
+$$\log L(w) = \sum_{i=1}^n \bigl[y_i \log\mu_i + (1-y_i)\log(1-\mu_i)\bigr]$$
+
+### Recognize cross entropy
+
+For each sample $i$, the true label is deterministic: the distribution $[y_i, 1-y_i]$ is either $[1,0]$ or $[0,1]$. The model predicts distribution $[\mu_i, 1-\mu_i]$. Their cross entropy is:
+
+$$H\bigl([y_i,1-y_i],[\mu_i,1-\mu_i]\bigr) = -\bigl[y_i\log\mu_i + (1-y_i)\log(1-\mu_i)\bigr]$$
+
+That is exactly the negative of one term in the log likelihood sum. So:
+
+$$\log L(w) = -\sum_{i=1}^n H\bigl([y_i,1-y_i],[\mu_i,1-\mu_i]\bigr)$$
+
+<Callout variant="key">
+  Negative log likelihood = sum of cross entropies between labels and predictions. Maximizing likelihood = Minimizing cross entropy loss.
+</Callout>
+
+<Callout variant="definition" title="The binary cross entropy loss formula you'll see everywhere">
+  $$\mathcal{L} = -\bigl[y\log\mu + (1-y)\log(1-\mu)\bigr]$$
+
+  Now you know exactly where this comes from. It is not arbitrary.
+</Callout>
+
+<CollapsibleStep title="Sanity check: what does a good model look like?" variant="example">
+
+**Customer 1 did NOT click ($y=0$).** We want $\mu_1 \to 0$.
+
+Loss $= -\log(1-\mu_1)$. As $\mu_1\to0$, loss $\to 0$. As $\mu_1\to1$ (confidently wrong), loss $\to\infty$.
+
+**Model perfectly correct, probability = 1:** Loss $= -\log 1 = 0$.
+
+**Model confidently wrong, probability = 0:** Loss $= -\log 0 = +\infty$.
+
+</CollapsibleStep>
+
+### Why weights blow up without regularization
+
+To push cross entropy to zero, the model needs $\mu$ to be exactly 0 or 1. The sigmoid only reaches those values when $w^Tx \to \pm\infty$, meaning the weights become infinite. Infinite weights = the model changes wildly with any small change in data = high variance. This is why you minimize cross entropy plus an L2 penalty on $w$. The regularization keeps weights finite and the model stable.
+
+---
+
+## 10. Multiclass Logistic Regression & Softmax
+
+### The problem with binary logistic regression
+
+Binary logistic regression gives you a single score $z = w^Tx$ and passes it through a sigmoid to get $P(y=1)$. That works when there are only two classes. But what if you want to classify a handwritten digit as one of 10 classes (0 through 9)? Or an image as one of 1,000 objects? You need a different setup.
+
+### Step 1: One weight vector per class
+
+In binary logistic regression you had one weight vector $w \in \mathbb{R}^d$. In multiclass with $k$ classes, you have **one weight vector per class**: $w_1, w_2, \ldots, w_k$, each in $\mathbb{R}^d$. Stack them into a weight matrix $W$ of shape $k \times d$:
+
+$$W = \begin{bmatrix} \leftarrow w_1^T \rightarrow \\ \leftarrow w_2^T \rightarrow \\ \vdots \\ \leftarrow w_k^T \rightarrow \end{bmatrix} \quad \in \mathbb{R}^{k \times d}$$
+
+### Step 2: Compute one score per class (logits)
+
+For a given input $x \in \mathbb{R}^d$, multiply the weight matrix by $x$ to get a vector of $k$ scores, one per class:
+
+$$z = Wx = \begin{bmatrix} w_1^T x \\ w_2^T x \\ \vdots \\ w_k^T x \end{bmatrix} \in \mathbb{R}^k$$
+
+These $k$ numbers are called **logits**. Each one is the raw score the model assigns to that class. A large positive logit for class 3 means the model strongly suspects this input belongs to class 3. A large negative logit means it strongly suspects it does not.
+
+<Callout variant="warning" title="Logits are NOT probabilities yet">
+  Logits can be any real number, positive or negative. They do not sum to 1. They are raw scores. You cannot interpret them directly as "how confident the model is." You need to convert them first.
+</Callout>
+
+### Step 3: Convert logits to probabilities with softmax
+
+Sigmoid mapped one number to $(0,1)$. Softmax maps a *vector* of $k$ numbers to a probability distribution over $k$ classes — all outputs are positive and they sum to exactly 1:
+
+$$p_i = \text{softmax}(z)_i = \frac{e^{z_i}}{\displaystyle\sum_{j=1}^k e^{z_j}}$$
+
+The denominator is just a normalizing constant — it ensures all $k$ probabilities sum to 1. The exponential in the numerator does two things: (1) it makes everything positive, and (2) it amplifies differences, making the highest logit dominate.
+
+<CollapsibleStep title="Full worked example: z = [4.5, 0.5, 3.9]" variant="example">
+
+**Step 1.** Exponentiate each logit: $e^{4.5} = 90.0,\quad e^{0.5} = 1.65,\quad e^{3.9} = 49.4$
+
+**Step 2.** Sum them: $90.0 + 1.65 + 49.4 = 141.05$
+
+**Step 3.** Divide each by the sum:
+
+$$p_1 = 90.0/141.05 = \mathbf{0.638}, \quad p_2 = 1.65/141.05 = \mathbf{0.012}, \quad p_3 = 49.4/141.05 = \mathbf{0.350}$$
+
+**Step 4.** Check: $0.638 + 0.012 + 0.350 = 1.0$ ✓ — Model predicts class 1 with 63.8%, class 3 with 35%, class 2 barely at 1.2%.
+
+</CollapsibleStep>
+
+<CollapsibleStep title="Lecture's example: z = [1, 2, 3]" variant="example">
+
+**Step 1.** $e^1=2.718,\quad e^2=7.389,\quad e^3=20.086$
+
+**Step 2.** Sum $= 30.193$
+
+**Step 3.** $\text{softmax}([1,2,3]) = [0.09,\ 0.24,\ 0.67]$
+
+**Step 4.** Notice: $z_3$ was only 2× larger than $z_1$ (3 vs 1), but $p_3$ is 7× larger than $p_1$ (0.67 vs 0.09). The exponential amplifies differences.
+
+</CollapsibleStep>
+
+<Callout variant="warning" title="Why exponentiate? Why not just normalize directly?">
+  You could normalize raw scores directly: $p_i = z_i / \sum_j z_j$. But this breaks when any $z_i$ is negative (you'd get negative probabilities). Exponentiating first guarantees everything is positive. It also has a nice theoretical grounding: softmax is the maximum entropy distribution subject to constraints on the expected scores.
+</Callout>
+
+### The full pipeline from x to probabilities
+
+$$x \xrightarrow{z = Wx} \text{logits } z \xrightarrow{\text{softmax}} \text{probs } p \xrightarrow{\text{argmax}} \hat{y}$$
+
+### How to make a prediction (at test time)
+
+You don't actually need to run the full softmax at test time if you only want the predicted class. Since softmax is monotone (larger logit = larger probability), you just take the argmax of the logits:
+
+$$\hat{y} = \arg\max_j\ z_j = \arg\max_j\ w_j^T x$$
+
+Softmax is only needed when you want actual probability values, e.g. for computing the loss during training.
+
+### Why binary logistic regression is a special case
+
+When $k=2$ (two classes), softmax with weight vectors $w_1, w_2$ gives:
+
+$$p_1 = \frac{e^{w_1^Tx}}{e^{w_1^Tx} + e^{w_2^Tx}} = \frac{1}{1 + e^{(w_2-w_1)^Tx}} = \sigma\bigl((w_1-w_2)^Tx\bigr)$$
+
+That is exactly the sigmoid applied to a single weight vector $w = w_1 - w_2$. Binary logistic regression is multiclass logistic regression with $k=2$, collapsed to one weight vector.
+
+### The label as a distribution (one-hot encoding)
+
+In binary classification, the label was $y=0$ or $y=1$. In multiclass, the label for class 3 out of 5 is a one-hot vector:
+
+$$y = [0,\ 0,\ \mathbf{1},\ 0,\ 0]$$
+
+This one-hot vector is the "true distribution" $P$ in the cross entropy calculation. It is a deterministic distribution: probability 1 on the correct class, 0 on everything else.
+
+### Cross entropy loss for multiclass
+
+The model outputs a probability vector $p = [p_1, p_2, \ldots, p_k]$ from softmax. The true label is a one-hot vector $y = [0, 0, 1, 0, \ldots]$. The cross entropy between them:
+
+$$\mathcal{L}_i = H(y, p) = -\sum_{c=1}^k y_c \log p_c$$
+
+Since $y$ is one-hot, every term in that sum is zero except for the correct class. Everything cancels and you are left with:
+
+$$\mathcal{L}_i = -\log p_{\text{true class}}$$
+
+<Callout variant="intuition">
+  The multiclass cross entropy loss is just the negative log of the probability your model assigned to the correct answer. If it assigned 0.95 to the right class, loss = −log(0.95) ≈ 0.05. If it assigned 0.02 to the right class, loss = −log(0.02) ≈ 3.91. The model is heavily punished for low confidence on the right answer.
+</Callout>
+
+<CollapsibleStep title="Full loss examples — same model, different true classes" variant="example">
+
+Model probabilities: $p = [0.01,\ 0.04,\ 0.80,\ 0.10,\ 0.05]$
+
+**True class = 3 (the one it's confident about):**
+Loss $= -\log(0.80) = 0.22$ — very low. Model is right and confident.
+
+**True class = 2 (model assigned only 4%):**
+Loss $= -\log(0.04) = 3.22$ — high. Model is wrong and overconfident elsewhere.
+
+**True class = 1 (model assigned only 1%):**
+Loss $= -\log(0.01) = 4.61$ — very high. Model is confidently wrong.
+
+**Perfect model, prob = 1 on correct class:** loss $= -\log(1) = 0$
+
+**Worst case, prob = 0 on correct class:** loss $= -\log(0) = +\infty$
+
+</CollapsibleStep>
+
+### What logits to maximize at training time?
+
+During training you want the loss to go down. For each training image, you want $-\log p_{\text{true class}}$ to be small, which means you want $p_{\text{true class}}$ to be large, which means you want $z_{\text{true class}}$ (the logit for the correct class) to be much larger than all other logits.
+
+In the limit: if the correct class logit is $+\infty$ and all others are $-\infty$, then softmax gives probability 1 on the correct class and the loss is 0. Gradient descent pushes the weights in this direction. But again, regularization stops the weights from actually going to infinity.
+
+### Observation: cross entropy only cares about the correct class
+
+True label $y = [1, 0, 0]$. Two models both say the correct class has probability 0.8:
+
+- Model 1: $[0.8, 0.1, 0.1]$ — Loss $= -\log(0.8) = 0.22$
+- Model 2: $[0.8, 0.0, 0.2]$ — Loss $= -\log(0.8) = 0.22$
+
+Same loss, even though one assigned 0.0 to class 2. Cross entropy is completely indifferent to how the remaining probability is split among wrong classes. This is a known limitation. The fix is **label smoothing**: use $y = [0.9, 0.05, 0.05]$ so the model is penalized for being overconfident on wrong classes too.
+
+---
+
+## 11. Visualizing What Logistic Regression Learns
+
+### MNIST dataset
+
+60,000 handwritten digits, 28×28 pixels, black and white, 10 classes (0–9). Multiclass softmax logistic regression gives one weight vector per class, each of length 784 (28×28). If you reshape each weight vector into a 28×28 image and display it, you see a blurry template of that digit.
+
+<Callout variant="definition" title="Code to visualize">
+```python
+  coefs = model.coef_.copy()
+  plt.imshow(coefs[0].reshape(28, 28))
+```
+</Callout>
+
+### What the weight maps look like (classes 0–9)
+
+Red = positive weights (pixel here = score goes up = more likely this class). Blue = negative weights (pixel here = score goes down = less likely this class).
+
+<WeightGrid />
+
+<Callout variant="warning" title="Why class 0 looks like a donut">
+  The weight map for class 0 has positive (red) weights arranged in a ring where a zero's ink sits, and a negative (blue) center where zeros have no ink. When you take $w^0 \cdot x$: if the image has pixels around the ring and empty center, the inner product is large and positive, so softmax assigns high probability to class 0. If the center has pixels (like a circle with a filled center would), the score drops.
+</Callout>
+
+### What logistic regression cannot do
+
+These weight maps are linear templates. A rotated "1" won't match the class-1 template well, so the model fails. To handle transformations you either:
+
+- Use **data augmentation**: add rotated/scaled versions to training data
+- Use a **deep neural network** whose intermediate layers learn invariant features (edges, curves, then parts, then whole objects)
+
+### Bias-variance when you make the model bigger
+
+| Change | Bias | Variance |
+|---|---|---|
+| Add more parameters / layers | Decreases | Increases |
+| Increase regularization ($\lambda$) | Increases | Decreases |
+| Reduce regularization ($\lambda$) | Decreases | Increases |
+
+This is why you always train with a regularization term: minimize cross entropy $+ \lambda\|w\|^2$. The cross entropy drives model accuracy; the regularization keeps variance under control.
+
+---
+
+## Summary
+
+| Concept | Formula | Meaning |
+|---|---|---|
+| **Entropy H(p)** | $-\sum p(x)\log p(x)$ | Minimum bits to compress a RV with distribution $p$. Zero when deterministic, max at uniform. |
+| **KL D(p∥q)** | $\sum p(x)\log\frac{p(x)}{q(x)}$ | Extra bits wasted using scheme for $q$ when data is from $p$. Always $\geq 0$. Not symmetric. |
+| **Cross Entropy H(p,q)** | $-\sum p(x)\log q(x)$ | Total bits encoding $p$ using $q$-scheme. $= H(p) + D(p\|q)$. |
+| **The link** | $H(p,q) = H(p) + D(p\|q)$ | Minimizing CE over $q$ = minimizing KL = making $q$ match $p$. |
+| **Logistic regression** | $P(y=1\|x)=\sigma(w^Tx)$ | Discriminative binary classifier. Score → sigmoid → probability. |
+| **Binary CE loss** | $-[y\log\mu+(1-y)\log(1-\mu)]$ | Negative log likelihood of logistic regression. Minimizing this = MLE. |
+| **Softmax** | $e^{z_i}/\sum_j e^{z_j}$ | Multiclass sigmoid. Logits → probability distribution over $k$ classes. |
+| **Multiclass CE loss** | $-\log p_{\text{true class}}$ | For one-hot labels: negative log of probability assigned to the correct class. |
+
+<Callout variant="key">
+  When you write down the likelihood of your data under logistic regression and take the log, you get cross entropy. This is why cross entropy is the universal loss for classification: it is MLE, and it has a clean information-theoretic meaning as the number of bits your model wastes per prediction.
+</Callout>

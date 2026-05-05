@@ -1,0 +1,615 @@
+---
+lecture: 14
+title: "MLE, MAP, and Bias-Variance Tradeoff"
+description: "From coins to regression weights. Derive ridge regression from MAP with a Gaussian prior. Then decompose test error into noise, bias, and variance — and understand exactly what each term means."
+tags:
+  - { label: "MLE/MAP", type: "proof" }
+  - { label: "Regularization", type: "concept" }
+  - { label: "Bias-Variance", type: "math" }
+  - { label: "Bayes", type: "concept" }
+readTime: 45
+status: published
+date: "2025-02-17"
+prereqs:
+  - "13-sgd"
+---
+
+<Callout variant="note" title="Contents">
+1. The Bernoulli Distribution and Likelihood
+2. Maximum Likelihood Estimation (MLE)
+3. Maximum A Posteriori Estimation (MAP)
+4. Prior Beliefs on Regression Weights
+5. Deriving Ridge Regression from MAP
+6. The Four Equivalences (Know These Cold)
+7. The Bias-Variance Decomposition
+8. Lambda, Ridge, and the Trade-off in Practice
+9. How This Material Is Tested
+10. **Exam Prep: Practice Problems (7 problems with solutions)**
+11. Quick Reference
+</Callout>
+
+## 1. The Bernoulli Distribution and Likelihood
+
+*Reading: Bishop 3.1.1*
+
+We start with the simplest estimation problem you can imagine: you have a coin, and you don't know how biased it is. This example is small enough to do by hand, but it teaches the exact same logic we'll use for regression weights later.
+
+### Setup
+
+Let $\gamma \in [0,1]$ be the unknown probability that the coin lands heads. We flip it $n$ times and observe binary outcomes $x_1, x_2, \ldots, x_n \in \{0, 1\}$, where $1$ means heads.
+
+The probability of a single outcome:
+
+$$P(x_i = 1 \mid \gamma) = \gamma, \qquad P(x_i = 0 \mid \gamma) = 1 - \gamma$$
+
+We want a single formula that handles both cases. The trick is to write it as an exponentiation that acts like a switch.
+
+<Callout variant="definition" title="Bernoulli PMF (compact form)">
+
+$$P(x_i \mid \gamma) = \gamma^{x_i}(1 - \gamma)^{1 - x_i}$$
+
+Check it yourself: plug in $x_i = 1$ and you get $\gamma^1(1-\gamma)^0 = \gamma$. Plug in $x_i = 0$ and you get $\gamma^0(1-\gamma)^1 = 1-\gamma$. The professor calls this an "if-statement obfuscated as math."
+</Callout>
+
+### The Likelihood Function
+
+Given $n$ independent coin flips, the likelihood of the full dataset $\mathcal{D} = \{x_1, \ldots, x_n\}$ is the product of the individual probabilities. Independence is the key assumption — it lets us multiply.
+
+$$P(\mathcal{D} \mid \gamma) = \prod_{i=1}^{n} \gamma^{x_i}(1 - \gamma)^{1 - x_i}$$
+
+**Important:** the likelihood is a *function of $\gamma$*, not of the data. The data is fixed (we already observed it). We are asking "for which value of $\gamma$ would this data have been most likely to occur?"
+
+### Log-Likelihood
+
+Any time you see a product of many terms, the right move is to take the logarithm. Two reasons:
+
+- **Math convenience:** Log turns products into sums, which are much easier to take derivatives of.
+- **Numerical stability:** If one term is very small (like $10^{-16}$), it kills the entire product via floating-point underflow. The log avoids this.
+
+$$\ln P(\mathcal{D} \mid \gamma) = \sum_{i=1}^{n}\bigl[x_i \ln \gamma + (1 - x_i)\ln(1 - \gamma)\bigr]$$
+
+Notice: the log-likelihood depends on the $x_i$ only through their sum $\sum_i x_i$. This sum is called a **sufficient statistic** for $\gamma$ — it captures everything the data tells you about the parameter.
+
+---
+
+## 2. Maximum Likelihood Estimation (MLE)
+
+*Reading: Bishop 3.1.1, 4.1.2*
+
+<Callout variant="definition" title="MLE">
+MLE asks: **"What value of the parameter makes the observed data most likely?"** It uses only the data, with no prior beliefs about what the parameter should be.
+
+$$\hat{\gamma}_{\text{MLE}} = \arg\max_{\gamma}\; P(\mathcal{D} \mid \gamma)$$
+</Callout>
+
+### General Bernoulli MLE
+
+Start from the log-likelihood, take its derivative with respect to $\gamma$, and set it to zero.
+
+**Step 1 — Differentiate:**
+
+$$\frac{d}{d\gamma}\ln P(\mathcal{D}\mid\gamma) = \frac{\sum_i x_i}{\gamma} - \frac{n - \sum_i x_i}{1 - \gamma}$$
+
+**Step 2 — Set to zero and solve.** Let $k = \sum_i x_i$ (number of heads):
+
+$$\frac{k}{\gamma} = \frac{n - k}{1 - \gamma} \;\Longrightarrow\; k(1-\gamma) = (n-k)\gamma \;\Longrightarrow\; k = n\gamma$$
+
+$$\boxed{\hat{\gamma}_{\text{MLE}} = \frac{k}{n} = \frac{\text{number of heads}}{\text{total flips}}}$$
+
+This is just the sample mean — the fraction of heads observed. If you see 7 heads in 10 flips, MLE says $\hat{\gamma} = 0.7$.
+
+### Worked Example: $\mathcal{D} = (1, 1)$
+
+Flip a coin twice, get heads both times. Here $n = 2$, $k = 2$.
+
+The likelihood is $P(\mathcal{D}\mid\gamma) = \gamma^2$. The log-likelihood is $2\ln\gamma$. Its derivative $2/\gamma$ is always positive for $\gamma > 0$ — no interior critical point. The maximum is at the boundary.
+
+<Callout variant="key" title="Result">
+$\hat{\gamma}_{\text{MLE}} = 1$. MLE says the coin always comes up heads. With only 2 data points, this is a pretty extreme conclusion. **MLE can overfit badly when data is limited.** This is exactly what motivates MAP.
+</Callout>
+
+---
+
+## 3. Maximum A Posteriori Estimation (MAP)
+
+*Reading: Bishop 2.6.1, 2.6.2*
+
+<Callout variant="definition" title="MAP Estimation">
+MAP does the same thing as MLE, but also brings in a prior belief $p(\gamma)$ about the parameter. Instead of maximizing just the likelihood, it maximizes the *posterior*:
+
+$$\hat{\gamma}_{\text{MAP}} = \arg\max_{\gamma}\; p(\gamma \mid \mathcal{D})$$
+</Callout>
+
+### Bayes' Rule
+
+$$p(\gamma \mid \mathcal{D}) = \frac{p(\mathcal{D} \mid \gamma)\; p(\gamma)}{p(\mathcal{D})}$$
+
+- $p(\mathcal{D}\mid\gamma)$ = **likelihood** (same as in MLE)
+- $p(\gamma)$ = **prior** (what we believe about $\gamma$ before seeing data)
+- $p(\mathcal{D})$ = **evidence**, the marginal likelihood (a normalizing constant)
+
+<Callout variant="key" title="You don't need p(𝒟)">
+$p(\mathcal{D})$ does not depend on $\gamma$ — it's a constant with respect to the optimization. For MAP we only need the argmax, so we work with the *unnormalized* posterior:
+
+$$p(\gamma \mid \mathcal{D}) \propto p(\mathcal{D} \mid \gamma) \cdot p(\gamma)$$
+
+Rescaling a function does not change where its maximum is.
+</Callout>
+
+### Why Not a Gaussian Prior for the Coin Bias?
+
+$\gamma$ must be between 0 and 1, but a Gaussian has support on $(-\infty, +\infty)$. A Gaussian prior would assign nonzero probability to $\gamma = -3$ or $\gamma = 7$, which make no sense as probabilities. You need a distribution whose support matches the parameter space — like a Beta distribution (continuous on $[0,1]$) or a discrete prior.
+
+### Worked Example: Discrete Prior
+
+The lecture uses a simple discrete prior: the coin is either 90% heads or 10% heads, each equally likely.
+
+$$P(\gamma = 0.9) = 0.5, \qquad P(\gamma = 0.1) = 0.5$$
+
+Since the prior only has mass at two points, the posterior also only has mass at those two points.
+
+**Evaluate the unnormalized posterior at each point:**
+
+At $\gamma = 0.9$: $\quad 0.9^2 \times 0.5 = 0.405$
+
+At $\gamma = 0.1$: $\quad 0.1^2 \times 0.5 = 0.005$
+
+**Normalize (optional):**
+
+$$P(\gamma = 0.9 \mid \mathcal{D}) = \frac{0.405}{0.41} \approx 0.988, \qquad P(\gamma = 0.1 \mid \mathcal{D}) \approx 0.012$$
+
+$$\hat{\gamma}_{\text{MAP}} = 0.9$$
+
+Compare: MLE said $\hat{\gamma} = 1$ (always heads). MAP said $\hat{\gamma} = 0.9$. **The prior pulled us back from the extreme MLE answer.** This is the core idea behind regularization.
+
+### Computing $P(\mathcal{D})$ via the Law of Total Probability
+
+$$P(\mathcal{D}) = P(\mathcal{D}\mid\gamma=0.9)\,P(\gamma=0.9) + P(\mathcal{D}\mid\gamma=0.1)\,P(\gamma=0.1) = 0.81 \times 0.5 + 0.01 \times 0.5 = 0.41$$
+
+The general form: $P(A) = \sum_i P(A\mid B_i)P(B_i)$. Condition on each possible value of the hidden variable, weight by its probability, and sum.
+
+<Callout variant="warning" title="Midterm Warning">
+The professor said this directly: *"The midterm is coming and you absolutely need to know the law of total probability."* You must be able to write it down and apply it to marginalize over parameters.
+</Callout>
+
+---
+
+## 4. Prior Beliefs on Regression Weights
+
+*Reading: Bishop 2.6.2*
+
+We move from a coin bias to regression weights. The structure is exactly the same: parameter ($\mathbf{w}$ instead of $\gamma$), likelihood, and optionally a prior.
+
+### The Gaussian Prior on Weights
+
+A common choice — assume each weight is drawn independently from a zero-mean Gaussian:
+
+$$w_j \sim \mathcal{N}(0, \tau^2) \qquad \text{for each component } j$$
+
+Written for the full weight vector:
+
+$$p(\mathbf{w} \mid \tau^2) = \frac{1}{(2\pi\tau^2)^{M/2}} \exp\!\left(-\frac{\|\mathbf{w}\|^2}{2\tau^2}\right)$$
+
+This prior encodes two things:
+
+- **Centered at zero:** A weight will only move away from zero if the data gives it a reason to.
+- **$\tau^2$ controls strength:** Small $\tau^2$ = weights should stay near zero (strong regularization). Large $\tau^2$ = loose prior, let the data decide.
+
+<Callout variant="key" title="Connection to Neural Networks">
+In modern neural networks, this Gaussian/L2 prior on weights is called **weight decay**. Same concept: penalize large weights to prevent overfitting.
+</Callout>
+
+### Extreme Case: $\tau \to 0$
+
+If $\tau = 0$, the prior becomes a point mass at $\mathbf{w} = \mathbf{0}$. You are 100% certain the weights are zero before seeing any data. The MAP estimate becomes $\hat{\mathbf{w}}_{\text{MAP}} = \mathbf{0}$, which predicts zero for everything.
+
+### The Likelihood for Regression
+
+*Reading: Bishop 4.1.2*
+
+We assume each target equals a deterministic function plus Gaussian noise:
+
+$$t_n = \mathbf{w}^T\boldsymbol{\phi}(\mathbf{x}_n) + \epsilon_n, \qquad \epsilon_n \sim \mathcal{N}(0, \sigma^2)$$
+
+Each observation comes from a Gaussian centered at the prediction:
+
+$$p(t_n \mid \mathbf{x}_n, \mathbf{w}, \sigma^2) = \mathcal{N}(t_n \mid \mathbf{w}^T\boldsymbol{\phi}(\mathbf{x}_n),\; \sigma^2)$$
+
+For $N$ independent data points:
+
+$$p(\mathbf{t} \mid \mathbf{X}, \mathbf{w}, \sigma^2) = \prod_{n=1}^{N} \mathcal{N}(t_n \mid \mathbf{w}^T\boldsymbol{\phi}(\mathbf{x}_n),\; \sigma^2)$$
+
+Here $\boldsymbol{\Phi}$ is the $N \times M$ **design matrix** — each row is the feature vector $\boldsymbol{\phi}(\mathbf{x}_n)^T$, and $\mathbf{t}$ is the $N \times 1$ vector of targets.
+
+---
+
+## 5. Deriving Ridge Regression from MAP
+
+*Reading: Bishop 2.6.2, 4.1.6*
+
+We combine the Gaussian likelihood with the Gaussian prior and show that MAP estimation gives ridge regression.
+
+The posterior (up to a constant):
+
+$$p(\mathbf{w} \mid \mathbf{t}) \propto p(\mathbf{t} \mid \mathbf{w}) \cdot p(\mathbf{w})$$
+
+To find the MAP estimate, we maximize the posterior — equivalently, minimize the negative log posterior:
+
+$$\hat{\mathbf{w}}_{\text{MAP}} = \arg\min_{\mathbf{w}} \bigl[-\ln p(\mathbf{t}\mid\mathbf{w}) - \ln p(\mathbf{w})\bigr]$$
+
+### Full Derivation
+
+<CollapsibleStep title="Step 1: Negative log-likelihood" variant="derivation" defaultOpen={true}>
+
+The likelihood is a product of Gaussians. Log turns the product into a sum, and the exponential inside each Gaussian gives a squared error term.
+
+$$-\ln p(\mathbf{t}\mid\mathbf{w}) = \frac{1}{2\sigma^2}\sum_{n=1}^N \bigl(t_n - \mathbf{w}^T\boldsymbol{\phi}(\mathbf{x}_n)\bigr)^2 + \text{const}$$
+
+The constant absorbs terms like $\frac{N}{2}\ln(2\pi\sigma^2)$ that don't depend on $\mathbf{w}$.
+</CollapsibleStep>
+
+<CollapsibleStep title="Step 2: Negative log-prior" variant="derivation" defaultOpen={true}>
+
+The prior is $p(\mathbf{w}) \propto \exp(-\|\mathbf{w}\|^2 / 2\tau^2)$. Take the negative log:
+
+$$-\ln p(\mathbf{w}) = \frac{\|\mathbf{w}\|^2}{2\tau^2} + \text{const}$$
+
+Why? Because $-\ln(e^{-a}) = a$. The two negatives cancel.
+</CollapsibleStep>
+
+<CollapsibleStep title="Step 3: Combine and identify λ" variant="derivation" defaultOpen={true}>
+
+Adding the two terms:
+
+$$\hat{\mathbf{w}}_{\text{MAP}} = \arg\min_{\mathbf{w}} \left[\frac{1}{2\sigma^2}\|\mathbf{t} - \boldsymbol{\Phi}\mathbf{w}\|^2 + \frac{1}{2\tau^2}\|\mathbf{w}\|^2\right]$$
+
+Multiply through by $\sigma^2$ (doesn't change the argmin). Define $\lambda = \sigma^2 / \tau^2$:
+
+$$\hat{\mathbf{w}}_{\text{MAP}} = \arg\min_{\mathbf{w}} \left[\frac{1}{2}\|\mathbf{t} - \boldsymbol{\Phi}\mathbf{w}\|^2 + \frac{\lambda}{2}\|\mathbf{w}\|^2\right]$$
+</CollapsibleStep>
+
+<Callout variant="key" title="Key Result">
+**This is ridge regression.** Least squares + Gaussian prior on weights = ridge regression. The regularization parameter $\lambda = \sigma^2/\tau^2$ controls the balance between fitting the data and keeping weights small.
+</Callout>
+
+### The Closed-Form Solution
+
+*Reading: Bishop 4.1.6, Eq. 4.27*
+
+Setting the gradient of the ridge objective to zero:
+
+$$\mathbf{w}_{\text{ridge}} = (\lambda\mathbf{I} + \boldsymbol{\Phi}^T\boldsymbol{\Phi})^{-1}\boldsymbol{\Phi}^T\mathbf{t}$$
+
+Compare with OLS: $\mathbf{w}_{\text{OLS}} = (\boldsymbol{\Phi}^T\boldsymbol{\Phi})^{-1}\boldsymbol{\Phi}^T\mathbf{t}$. Ridge adds $\lambda\mathbf{I}$ to the inverted matrix — this guarantees invertibility even when $\boldsymbol{\Phi}^T\boldsymbol{\Phi}$ is singular, and shrinks the solution toward zero.
+
+---
+
+## 6. The Four Equivalences
+
+The professor repeats these several times. These are the central connections to take away.
+
+<Callout variant="note" title="Know These Cold">
+
+| Probabilistic View | Optimization View |
+|---|---|
+| Gaussian noise + MLE | Ordinary Least Squares (OLS) |
+| Gaussian noise + Gaussian prior + MAP | Ridge Regression |
+| MLE = no prior = no regularization | $\lambda \to 0$ (or $\tau \to \infty$) |
+| Strong prior ($\tau \to 0$) = strong regularization | $\lambda \to \infty$, $\mathbf{w} \to \mathbf{0}$ |
+
+The regularization parameter is $\lambda = \sigma^2/\tau^2$. Large $\tau^2$ (loose prior) → small $\lambda$ → less regularization. Small $\tau^2$ (tight prior) → large $\lambda$ → more regularization.
+</Callout>
+
+---
+
+## 7. The Bias-Variance Decomposition
+
+*Reading: Bishop 4.3*
+
+### Setup
+
+There's a true function $h(\mathbf{x})$ that generates the data. We never see it directly. Instead, we observe a noisy version:
+
+$$t = h(\mathbf{x}) + \epsilon, \qquad \mathbb{E}[\epsilon] = 0, \quad \text{Var}(\epsilon) = \sigma^2$$
+
+We train a model $f_{\mathbf{w}}(\mathbf{x})$ on a training set drawn from this process. Both the training data and the learned weights $\mathbf{w}$ are random — a different training set gives different weights and different predictions. We want to understand the **expected test error**, averaging over both noise and training-set randomness:
+
+$$\mathbb{E}\bigl[(t - f_{\mathbf{w}}(\mathbf{x}))^2\bigr]$$
+
+### The Main Result
+
+This expected test error breaks into exactly three pieces:
+
+$$\mathbb{E}\bigl[(t - f_{\mathbf{w}}(\mathbf{x}))^2\bigr] = \underbrace{\sigma^2}_{\text{Noise}} + \underbrace{\bigl(h(\mathbf{x}) - \mathbb{E}[f_{\mathbf{w}}(\mathbf{x})]\bigr)^2}_{\text{Bias}^2} + \underbrace{\mathbb{E}\bigl[(\mathbb{E}[f_{\mathbf{w}}(\mathbf{x})] - f_{\mathbf{w}}(\mathbf{x}))^2\bigr]}_{\text{Model Variance}}$$
+
+### What Each Term Means
+
+<Callout variant="definition" title="Noise: σ²">
+The **irreducible error**. Even with a perfect model, you can't predict better than this — the observations themselves are noisy. No amount of data or tuning removes it. Mathematically: $\sigma^2 = \mathbb{E}[\epsilon^2] = \text{Var}(\epsilon)$.
+</Callout>
+
+<Callout variant="definition" title="Bias²: (h(x) − E[f_w(x)])²">
+The gap between the truth and the **average** prediction (averaged over all possible training sets). High bias means your model is systematically wrong — it can't capture the true function no matter how much data you give it. Think about fitting a line to data that follows a parabola: the average line will always miss the curve.
+</Callout>
+
+<Callout variant="definition" title="Model Variance: E[(E[f_w(x)] − f_w(x))²]">
+How much the prediction jumps around when you retrain on a different training set. High variance means the model is very sensitive to which specific data points you happened to get. Think about a degree-100 polynomial: each training set produces wildly different predictions.
+</Callout>
+
+### Proof
+
+The proof uses the "subtract-and-add" trick twice — a standard technique worth understanding.
+
+<CollapsibleStep title="Step 1: Subtract and add h(x)" variant="derivation" defaultOpen={true}>
+
+$$\mathbb{E}[(t - f_{\mathbf{w}})^2] = \mathbb{E}\bigl[\bigl((t - h) + (h - f_{\mathbf{w}})\bigr)^2\bigr]$$
+
+Expand using $(a + b)^2 = a^2 + b^2 + 2ab$:
+
+$$= \mathbb{E}[(t-h)^2] + \mathbb{E}[(h - f_{\mathbf{w}})^2] + 2\,\mathbb{E}[(t-h)(h - f_{\mathbf{w}})]$$
+</CollapsibleStep>
+
+<CollapsibleStep title="Step 2: The cross term vanishes" variant="derivation" defaultOpen={true}>
+
+Since $t - h = \epsilon$, the cross term is $2\,\mathbb{E}[\epsilon\,(h - f_{\mathbf{w}})]$. The noise $\epsilon$ is independent of $f_{\mathbf{w}}$ (which depends on the training set, not on this test point's noise), so:
+
+$$\mathbb{E}[\epsilon\,(h - f_{\mathbf{w}})] = \mathbb{E}[\epsilon]\cdot\mathbb{E}[h - f_{\mathbf{w}}] = 0$$
+
+This gives: $\mathbb{E}[(t - f_{\mathbf{w}})^2] = \sigma^2 + \mathbb{E}[(h - f_{\mathbf{w}})^2]$
+</CollapsibleStep>
+
+<CollapsibleStep title="Step 3: Subtract and add E[f_w], second cross term vanishes" variant="derivation" defaultOpen={true}>
+
+Let $\bar{f} = \mathbb{E}[f_{\mathbf{w}}]$. Decompose the model estimation error:
+
+$$\mathbb{E}[(h - f_{\mathbf{w}})^2] = \mathbb{E}\bigl[\bigl((h - \bar{f}) + (\bar{f} - f_{\mathbf{w}})\bigr)^2\bigr] = \mathbb{E}[(h - \bar{f})^2] + \mathbb{E}[(\bar{f} - f_{\mathbf{w}})^2] + 2\,\mathbb{E}[(h - \bar{f})(\bar{f} - f_{\mathbf{w}})]$$
+
+$(h - \bar{f})$ is a constant — it doesn't depend on the training set — so:
+
+$$2(h - \bar{f})\,\mathbb{E}[\bar{f} - f_{\mathbf{w}}] = 2(h - \bar{f})\bigl(\mathbb{E}[f_{\mathbf{w}}] - \mathbb{E}[f_{\mathbf{w}}]\bigr) = 0$$
+
+And since $(h - \bar{f})^2$ is a constant, $\mathbb{E}[(h-\bar{f})^2] = (h - \bar{f})^2$. This completes the decomposition.
+</CollapsibleStep>
+
+---
+
+## 8. Lambda, Ridge, and the Trade-off in Practice
+
+In the ridge objective $\min_{\mathbf{w}} \|\mathbf{t} - \boldsymbol{\Phi}\mathbf{w}\|^2 + \lambda\|\mathbf{w}\|^2$, the parameter $\lambda$ is the knob that trades bias for variance.
+
+<Callout variant="key" title="λ → ∞ (strong regularization)">
+The penalty $\lambda\|\mathbf{w}\|^2$ dominates. Any nonzero $\mathbf{w}$ becomes hugely expensive, so $\hat{\mathbf{w}}_{\text{MAP}} \to \mathbf{0}$. This is called **shrinkage**.
+
+- Variance → 0: retrain on different data and you still get $\mathbf{w} \approx \mathbf{0}$.
+- Bias → large: the model predicts roughly zero for everything.
+- This is **underfitting**.
+</Callout>
+
+<Callout variant="key" title="λ → 0 (no regularization)">
+The penalty disappears — you recover OLS/MLE. The model is as flexible as possible.
+
+- Bias → small: the model can represent complex functions.
+- Variance → large: different training sets give wildly different predictions.
+- This is **overfitting**.
+</Callout>
+
+### Training Error vs. Test Error
+
+In practice, you can't compute the bias-variance decomposition (you don't know $h$). Instead, use the train/validation/test split.
+
+**As $\lambda$ decreases** (less regularization): training error goes **down**; test error has a **U-shape** — first decreasing (less underfitting), then increasing (overfitting).
+
+**As $\lambda$ increases** (more regularization): training error goes **up**; test error again has a U-shape with a sweet spot.
+
+The optimal $\lambda$ is at the bottom of the U-curve for the **validation error**. A separate test set then gives an honest final assessment. This is why we split data into train/validation/test: the validation set finds the hyperparameter, the test set evaluates honestly.
+
+### More Data Supports More Complexity
+
+With more training data, you can afford a smaller $\lambda$ — the data gives enough signal to reliably estimate more parameters, so the optimal complexity shifts toward more flexible models.
+
+### The Sinusoidal Experiment (Bishop 4.3)
+
+The textbook generates 100 datasets of 25 points from $h(x) = \sin(2\pi x)$ with Gaussian noise, then fits a 25-parameter model at different $\lambda$ values:
+
+- **Large $\lambda$ ($\ln\lambda = 3$):** Individual fits look similar (low variance), but the average fit is far from the true sinusoid (high bias).
+- **Small $\lambda$ ($\ln\lambda = -3$):** Individual fits are wildly different (high variance), but the average tracks the sinusoid closely (low bias).
+- **Optimal $\lambda$ ($\ln\lambda \approx 0.43$):** Minimizes bias² + variance, close to the $\lambda$ that minimizes test error.
+
+---
+
+## 9. How This Material Is Tested
+
+<Callout variant="note" title="Exam Format Guide">
+**MLE/MAP problems:** You get a distribution (Bernoulli, Gaussian, etc.), some observed data, and possibly a prior. Derive the log-likelihood, take the gradient, set to zero, and solve. For MAP, also add the log-prior term. The SP26 midterm Q3 (11 points) was entirely about Gaussian MLE/MAP: derive the log-likelihood, find MLE, write the log-posterior, identify the MAP optimization problem, and reason about limiting cases.
+
+**Ridge = MAP connection:** They may ask you to show this derivation or identify $\lambda = \sigma^2/\tau^2$. Tested indirectly on SP26 midterm (Q1 on regularization, Q2 on smoothness regularization).
+
+**Bias-variance:** Usually conceptual MC or short answer. What happens to bias/variance when you increase model complexity or regularization? May also ask you to derive the decomposition or identify the three terms.
+
+**Law of total probability:** Explicitly flagged by the professor as essential. You'll use it whenever you need to marginalize over a discrete or continuous parameter.
+</Callout>
+
+---
+
+## 10. Exam Prep: Practice Problems
+
+### Problem 1: MLE for a General Bernoulli
+
+> *Source: SP26 Midterm Q3 concepts + lecture coin example*
+
+<Callout variant="note" title="Problem">
+Given $n$ coin flips with $k$ heads, derive the MLE for $\gamma$. Show that $\hat{\gamma}_{\text{MLE}} = k/n$. Then: if you observe 3 heads in 3 flips, what does MLE say? Why might this be a problem?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+The log-likelihood is $\ell(\gamma) = k\ln\gamma + (n-k)\ln(1-\gamma)$.
+
+Take the derivative: $\ell'(\gamma) = k/\gamma - (n-k)/(1-\gamma)$.
+
+Set to zero: $k(1-\gamma) = (n-k)\gamma \;\Rightarrow\; k = n\gamma \;\Rightarrow\; \hat{\gamma}_{\text{MLE}} = k/n$.
+
+With 3 heads in 3 flips: $\hat{\gamma} = 1$. MLE says the coin always lands heads. This is a problem because with only 3 observations, concluding $\gamma = 1$ is a huge overfit. A single tails on the next flip would completely contradict this estimate. This is why a prior (MAP) is useful when data is limited.
+</CollapsibleStep>
+
+---
+
+### Problem 2: MAP with a Discrete Prior, Three Datasets
+
+> *Source: Lecture 14 coin example, directly from lecture*
+
+<Callout variant="note" title="Problem">
+Use the lecture's discrete prior: $P(\gamma=0.9) = P(\gamma=0.1) = 0.5$.
+
+**(a)** If $\mathcal{D} = (1,1)$, compute $\hat{\gamma}_{\text{MAP}}$. **(b)** If $\mathcal{D} = (0,0)$, compute $\hat{\gamma}_{\text{MAP}}$. **(c)** If $\mathcal{D} = (1,0)$, compute $\hat{\gamma}_{\text{MAP}}$.
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a) $\mathcal{D} = (1,1)$:** Likelihood at $\gamma=0.9$: $0.81$. At $\gamma=0.1$: $0.01$. Both priors are $0.5$. Unnormalized posteriors: $0.405$ vs $0.005$. So $\hat{\gamma}_{\text{MAP}} = 0.9$.
+
+**(b) $\mathcal{D} = (0,0)$:** Likelihood at $\gamma=0.9$: $(0.1)^2 = 0.01$. At $\gamma=0.1$: $(0.9)^2 = 0.81$. By symmetry with (a), $\hat{\gamma}_{\text{MAP}} = 0.1$. The data points toward the tails-biased coin.
+
+**(c) $\mathcal{D} = (1,0)$:** Likelihood at $\gamma=0.9$: $0.9 \times 0.1 = 0.09$. At $\gamma=0.1$: $0.1 \times 0.9 = 0.09$. The likelihoods are identical — unnormalized posteriors are $0.045$ vs $0.045$. There is no unique MAP estimate. One heads and one tails gives no evidence to distinguish between the two coins.
+</CollapsibleStep>
+
+---
+
+### Problem 3: MAP = Ridge Regression Derivation
+
+> *Source: Bishop 2.6.2 + 4.1.6 + lecture slides pp.8–13*
+
+<Callout variant="note" title="Problem">
+Starting from (i) Gaussian likelihood $p(\mathbf{t}\mid\mathbf{w}) = \prod_n \mathcal{N}(t_n \mid \mathbf{w}^T\boldsymbol{\phi}(\mathbf{x}_n), \sigma^2)$ and (ii) Gaussian prior $p(\mathbf{w}) = \mathcal{N}(\mathbf{0}, \tau^2\mathbf{I})$, show that the MAP objective is the ridge regression objective. Identify $\lambda$ in terms of $\sigma^2$ and $\tau^2$.
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+The posterior is $p(\mathbf{w}\mid\mathbf{t}) \propto p(\mathbf{t}\mid\mathbf{w})\,p(\mathbf{w})$. Take the negative log of each factor:
+
+$$-\ln p(\mathbf{t}\mid\mathbf{w}) = \frac{1}{2\sigma^2}\|\mathbf{t} - \boldsymbol{\Phi}\mathbf{w}\|^2 + C_1$$
+
+$$-\ln p(\mathbf{w}) = \frac{1}{2\tau^2}\|\mathbf{w}\|^2 + C_2$$
+
+Add and drop constants:
+
+$$\hat{\mathbf{w}}_{\text{MAP}} = \arg\min_{\mathbf{w}}\left[\frac{1}{2\sigma^2}\|\mathbf{t} - \boldsymbol{\Phi}\mathbf{w}\|^2 + \frac{1}{2\tau^2}\|\mathbf{w}\|^2\right]$$
+
+Multiply through by $\sigma^2$ and set $\lambda = \sigma^2/\tau^2$:
+
+$$\hat{\mathbf{w}}_{\text{MAP}} = \arg\min_{\mathbf{w}}\left[\frac{1}{2}\|\mathbf{t} - \boldsymbol{\Phi}\mathbf{w}\|^2 + \frac{\lambda}{2}\|\mathbf{w}\|^2\right]$$
+
+This is exactly the ridge regression objective.
+</CollapsibleStep>
+
+---
+
+### Problem 4: Effect of $\lambda$ on Bias and Variance
+
+> *Source: SP26 Midterm Q1(iv) + lecture slides p.37*
+
+<Callout variant="note" title="Problem">
+For the regularized objective $\min_{\mathbf{w}} \|\mathbf{X}\mathbf{w} - \mathbf{y}\|^2 + \lambda R(\mathbf{w})$:
+
+**(a)** What happens to bias and variance as $\lambda \to \infty$?
+
+**(b)** What happens as $\lambda \to 0$?
+
+**(c)** What happens to training error and test error as $\lambda$ increases?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a) $\lambda \to \infty$:** Weights shrink to zero. *Bias increases* (the model predicts roughly zero, so it's systematically wrong). *Variance decreases* (the model barely changes regardless of training set). This is underfitting.
+
+**(b) $\lambda \to 0$:** No regularization — you recover OLS/MLE. *Bias decreases* (the model can fit complex patterns). *Variance increases* (the model changes a lot with different training sets). This is overfitting.
+
+**(c) As $\lambda$ increases:** Training error monotonically *increases* (harder to fit data when weights are constrained). Test error has a **U-shape**: first decreases (variance reduction is worth the added bias), hits a minimum at the optimal $\lambda$, then increases (too much bias).
+</CollapsibleStep>
+
+---
+
+### Problem 5: Bias-Variance — What Can You Control?
+
+> *Source: Lecture 14 notes + Bishop 4.3*
+
+<Callout variant="note" title="Problem">
+Given $\mathbb{E}[(t - f_{\mathbf{w}})^2] = \sigma^2 + \text{bias}^2 + \text{variance}$, which term(s) can be reduced by: **(a)** collecting more data, **(b)** using a more complex model, **(c)** adding regularization?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**$\sigma^2$ (noise):** Irreducible. Nothing reduces it — not more data, not a better model.
+
+**Bias²:** How far the model family's average prediction is from the truth. More data does *not* directly reduce it (a line always underfits a quadratic). More complex models reduce it. Regularization increases it.
+
+**Variance:** How sensitive the model is to the specific training set. More data reduces it. More complex models increase it. Regularization reduces it.
+
+**Summary:**
+- (a) More data → reduces variance only
+- (b) More complex model → reduces bias, increases variance
+- (c) Regularization → increases bias, reduces variance
+</CollapsibleStep>
+
+---
+
+### Problem 6: MLE vs MAP Limiting Behavior
+
+> *Source: SP26 Midterm Q3(e) concepts*
+
+<Callout variant="note" title="Problem">
+**(a)** As $n \to \infty$, what does the MAP estimate converge to? Why?
+
+**(b)** As the prior becomes a point mass ($\tau \to 0$ for a Gaussian prior), what does the MAP estimate converge to? Why?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a)** As $n \to \infty$, MAP converges to MLE. With infinite data, the evidence from the data overwhelms any finite prior. In the formula $-\ln p(\mathbf{t}\mid\mathbf{w}) - \ln p(\mathbf{w})$, the first term grows with $n$ while the prior term stays constant, so the prior becomes negligible.
+
+**(b)** As $\tau \to 0$ (i.e., $\lambda \to \infty$), MAP converges to the prior mean: $\hat{\mathbf{w}} = \mathbf{0}$. The prior becomes infinitely strong — it says "I am absolutely certain the weights are zero" and no finite amount of data can overcome it. This is like the person who insists every coin is fair no matter what evidence you show them.
+</CollapsibleStep>
+
+---
+
+### Problem 7: Identifying the MAP Optimization
+
+> *Source: SP26 Midterm Q3(d)*
+
+<Callout variant="note" title="Problem">
+Which optimization problem does the MAP estimator solve?
+
+- **(A)** $\arg\max_\mu \; p(\mathcal{D} \mid \mu)$
+- **(B)** $\arg\max_\mu \; p(\mu \mid \mathcal{D})$
+- **(C)** $\arg\max_\mu \; p(\mathcal{D} \mid \mu) \cdot p(\mu)$
+- **(D)** $\arg\min_\mu \; p(\mu \mid \mathcal{D})$
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+The answer is **(C)**, which is equivalent to (B).
+
+MAP maximizes the posterior: $\hat{\mu}_{\text{MAP}} = \arg\max_\mu\, p(\mu\mid\mathcal{D})$. By Bayes' rule, $p(\mu\mid\mathcal{D}) = p(\mathcal{D}\mid\mu)\,p(\mu)/p(\mathcal{D})$. Since $p(\mathcal{D})$ doesn't depend on $\mu$, maximizing the posterior is the same as maximizing $p(\mathcal{D}\mid\mu)\cdot p(\mu)$.
+
+(A) is MLE (no prior). (D) minimizes instead of maximizes, which would find the *least* probable parameter.
+</CollapsibleStep>
+
+---
+
+## Quick Reference
+
+| Concept | Formula |
+|---|---|
+| Bernoulli PMF | $P(x\mid\gamma) = \gamma^x(1-\gamma)^{1-x}$ |
+| Bernoulli MLE | $\hat{\gamma}_{\text{MLE}} = k/n$ (sample mean) |
+| Bayes' Rule | $p(\gamma\mid\mathcal{D}) \propto p(\mathcal{D}\mid\gamma)\,p(\gamma)$ |
+| Law of Total Probability | $p(\mathcal{D}) = \sum_i p(\mathcal{D}\mid\gamma_i)\,p(\gamma_i)$ |
+| MAP objective | $\hat{\mathbf{w}}_{\text{MAP}} = \arg\min_{\mathbf{w}}[-\ln p(\mathbf{t}\mid\mathbf{w}) - \ln p(\mathbf{w})]$ |
+| Ridge objective | $\min_{\mathbf{w}} \frac{1}{2}\|\mathbf{t} - \boldsymbol{\Phi}\mathbf{w}\|^2 + \frac{\lambda}{2}\|\mathbf{w}\|^2$ |
+| Ridge solution | $\mathbf{w} = (\lambda\mathbf{I} + \boldsymbol{\Phi}^T\boldsymbol{\Phi})^{-1}\boldsymbol{\Phi}^T\mathbf{t}$ |
+| $\lambda$ in terms of model params | $\lambda = \sigma^2/\tau^2$ |
+| Bias-variance decomposition | $\mathbb{E}[(t-f_{\mathbf{w}})^2] = \sigma^2 + (h - \mathbb{E}[f_{\mathbf{w}}])^2 + \mathbb{E}[(\mathbb{E}[f_{\mathbf{w}}] - f_{\mathbf{w}})^2]$ |
+| Overfit = high variance | $\lambda$ too small, model too flexible |
+| Underfit = high bias | $\lambda$ too large, model too constrained |
+
+*Sources: Lecture 14 transcript, Lecture 14 slides (Dimakis & Listgarten, SP26), Bishop & Bishop Deep Learning Ch. 2, 3, 4, 5, SP26 midterm, handwritten lecture notes.*

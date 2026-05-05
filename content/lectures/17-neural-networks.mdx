@@ -1,0 +1,634 @@
+---
+lecture: 17
+title: "Neural Networks: XOR, Nonlinearity, and Why Depth Matters"
+description: "Why linear models fail XOR. Deep linear is still linear. ReLU breaks the stalemate. Feed-forward network notation, universal approximation, and the activation function zoo."
+tags:
+  - { label: "Neural Networks", type: "concept" }
+  - { label: "Nonlinearity", type: "math" }
+  - { label: "ReLU", type: "concept" }
+  - { label: "PyTorch", type: "code" }
+readTime: 55
+status: published
+date: "2025-03-10"
+prereqs:
+  - "15-gradient-descent"
+  - "16-entropy-logreg"
+---
+
+<Callout variant="note" title="Contents">
+  1. Why Neural Networks?
+  2. The Artificial Neuron
+  3. Linear Separability: AND Works, XOR Doesn't
+  4. The XOR Linear Regression Catastrophe
+  5. What If We Add a Hidden Layer? (Still Linear)
+  6. Adding a ReLU Activation Breaks Linearity
+  7. Feed-Forward Neural Network Notation
+  8. Universal Approximation, and Why We Still Go Deep
+  9. The Activation Function Zoo
+  10. Can You Steal a Neural Network?
+  11. PyTorch in 10 Lines
+  12. Summary
+</Callout>
+
+<Callout variant="key">
+  Punchline: depth alone does nothing. Depth + nonlinearity is everything.
+</Callout>
+
+---
+
+## 1. Why Neural Networks?
+
+An MNIST digit at 28×28 is a 784-dimensional vector. A 64×64 RGB image is a 12,288-dimensional vector. Your brain has no trouble looking at any of those and saying "five" or "cat." Something is making the high dimensionality not actually matter.
+
+<Callout variant="definition" title="The Manifold Hypothesis">
+  Real-world data (images, audio, text) lives on a **low-dimensional manifold** inside the giant input space. A handwritten 5 has roughly a few degrees of freedom (slant, stroke thickness, position), not 4096. The image vector is 4096-dimensional, but the *family of natural images* is much smaller.
+</Callout>
+
+If we believed images were arbitrary points in 4096 dimensions, we would need exponentially much data and exponentially complex bases (polynomials of 4096 variables explode immediately). But if we model along the manifold, complexity scales with the manifold dimension, which is small.
+
+The catch: we don't know what the manifold looks like. We don't know which directions matter. So we need a model that **learns the right basis from the data itself**. That is what neural networks do.
+
+<Callout variant="key">
+  A neural network is a data-dependent basis. It learns which directions on the manifold are relevant to the task, then classifies in that learned representation.
+</Callout>
+
+This is called *representation learning*. The early layers of a deep net learn edges and curves; middle layers learn parts (eyes, ears, wheels); late layers learn whole concepts (cat, car, the digit 5). We don't program any of this. It emerges from training.
+
+---
+
+## 2. The Artificial Neuron
+
+The biological story is short. A real neuron has dendrites that collect inputs from other neurons, a cell body that aggregates them, and an axon that fires a single output. Synapses can be excitatory (positive) or inhibitory (negative), and they have varying strengths. Learning, we think, is changes to those synaptic strengths.
+
+The mathematical abstraction is even shorter. Take inputs $x_1, \dots, x_D$. Multiply each by a weight $w_d$ (the synaptic strength). Add them up. Add a bias. Pass through some function $f$. That gives you a single output $y$.
+
+$$y = f\!\left( w_0 + \sum_{d=1}^{D} w_d x_d \right)$$
+
+### The Bias Trick
+
+The $w_0$ bias term is annoying to write separately. The standard trick: add a fake "input" $x_0 = 1$ that is always one. Then the bias becomes just another weight, and the formula collapses to a clean inner product:
+
+$$y = f(\vec{w} \cdot \vec{x}) = f\!\left(\sum_{d=0}^{D} w_d x_d\right) \quad \text{where } x_0 \equiv 1$$
+
+### Connecting to What We Already Know
+
+| Activation $f$ | What this neuron is |
+|---|---|
+| Identity, $f(z) = z$ | Linear regression |
+| Sigmoid, $f(z) = \frac{1}{1+e^{-z}}$ | Logistic regression |
+| Step, $f(z) = \mathbf{1}[z > 0]$ | Perceptron (binary classifier) |
+
+<Callout variant="intuition">
+  A single neuron is not new. You have already built every kind of single neuron in this class. What is new is **stacking many of them and learning all the weights jointly with gradient descent**.
+</Callout>
+
+---
+
+## 3. Linear Separability: AND Works, XOR Doesn't
+
+A neuron with a step activation outputs 1 when $\vec{w}\cdot\vec{x} > 0$ and 0 otherwise. Geometrically, it draws a hyperplane in input space. Points on one side get labeled 1, points on the other get labeled 0. So a single neuron can perfectly separate exactly the data that is **linearly separable**.
+
+### AND Is Linearly Separable
+
+<div className="grid grid-cols-2 gap-4 my-5">
+  <div className="rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">Truth Table</p>
+
+| $x_1$ | $x_2$ | $y$ |
+|---|---|---|
+| 0 | 0 | 0 |
+| 0 | 1 | 0 |
+| 1 | 0 | 0 |
+| 1 | 1 | 1 |
+
+  </div>
+  <div className="rounded-lg p-4 border flex flex-col items-center" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">Geometry</p>
+    <svg viewBox="0 0 180 160" style={{ width: '100%', maxWidth: '180px' }}>
+      <line x1="20" y1="140" x2="170" y2="140" stroke="#7a6f5e" strokeWidth="1.2"/>
+      <line x1="20" y1="20" x2="20" y2="140" stroke="#7a6f5e" strokeWidth="1.2"/>
+      <text x="170" y="155" fontSize="10" fill="#7a6f5e" fontFamily="JetBrains Mono, monospace">x1</text>
+      <text x="6" y="22" fontSize="10" fill="#7a6f5e" fontFamily="JetBrains Mono, monospace">x2</text>
+      <text x="14" y="155" fontSize="9" fill="#7a6f5e" fontFamily="JetBrains Mono, monospace">0</text>
+      <text x="105" y="155" fontSize="9" fill="#7a6f5e" fontFamily="JetBrains Mono, monospace">1</text>
+      <text x="6" y="60" fontSize="9" fill="#7a6f5e" fontFamily="JetBrains Mono, monospace">1</text>
+      <line x1="60" y1="20" x2="170" y2="120" stroke="#a0522d" strokeWidth="1.6" strokeDasharray="4,3"/>
+      <circle cx="20" cy="140" r="5" fill="#8b2020"/>
+      <circle cx="105" cy="140" r="5" fill="#8b2020"/>
+      <circle cx="20" cy="55" r="5" fill="#8b2020"/>
+      <circle cx="105" cy="55" r="5" fill="#2e6b4f"/>
+      <text x="115" y="60" fontSize="9" fill="#2e6b4f" fontFamily="JetBrains Mono, monospace">y=1</text>
+    </svg>
+  </div>
+</div>
+
+You can draw a single line that puts $(1,1)$ on one side and the other three on the other. So a perceptron (one neuron with a step activation) learns AND perfectly. Same story for OR.
+
+### XOR Is Not Linearly Separable
+
+<div className="grid grid-cols-2 gap-4 my-5">
+  <div className="rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">Truth Table</p>
+
+| $x_1$ | $x_2$ | $y$ |
+|---|---|---|
+| 0 | 0 | 0 |
+| 0 | 1 | 1 |
+| 1 | 0 | 1 |
+| 1 | 1 | 0 |
+
+  </div>
+  <div className="rounded-lg p-4 border flex flex-col items-center" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">Geometry</p>
+    <svg viewBox="0 0 180 160" style={{ width: '100%', maxWidth: '180px' }}>
+      <line x1="20" y1="140" x2="170" y2="140" stroke="#7a6f5e" strokeWidth="1.2"/>
+      <line x1="20" y1="20" x2="20" y2="140" stroke="#7a6f5e" strokeWidth="1.2"/>
+      <text x="170" y="155" fontSize="10" fill="#7a6f5e" fontFamily="JetBrains Mono, monospace">x1</text>
+      <text x="6" y="22" fontSize="10" fill="#7a6f5e" fontFamily="JetBrains Mono, monospace">x2</text>
+      <circle cx="20" cy="140" r="5" fill="#8b2020"/>
+      <circle cx="105" cy="140" r="5" fill="#2e6b4f"/>
+      <circle cx="20" cy="55" r="5" fill="#2e6b4f"/>
+      <circle cx="105" cy="55" r="5" fill="#8b2020"/>
+      <text x="50" y="100" fontSize="10" fill="#a0522d" fontFamily="JetBrains Mono, monospace" fontStyle="italic">no line works</text>
+    </svg>
+  </div>
+</div>
+
+The two green points are diagonally opposite, and the two red points are diagonally opposite. **No line separates green from red.** A single perceptron literally cannot learn XOR. That fact, made famous in Minsky and Papert's 1969 book *Perceptrons*, killed neural network research for about 20 years.
+
+<Callout variant="note" title="Historical Aside">
+  XOR is the simplest possible function that exposes this limitation. The inability of single-layer perceptrons to learn it convinced researchers that neural nets were a dead end. They were wrong, but it took until the 1980s (and the rediscovery of backpropagation) for the field to recover.
+</Callout>
+
+### The Decomposition Idea (Foreshadowing)
+
+You can write XOR as a combination of two AND-like functions:
+
+$$x_1 \oplus x_2 \;=\; (x_1 \text{ AND } \neg x_2) \;\;\text{OR}\;\; (\neg x_1 \text{ AND } x_2)$$
+
+Each of those AND-like pieces *is* linearly separable. So if you had two neurons computing those two pieces, then a third neuron computing the OR of their outputs, you could learn XOR with three neurons in two layers. **This is exactly what a neural network does**, but trained with gradient descent instead of hand-designed boolean logic.
+
+---
+
+## 4. The XOR Linear Regression Catastrophe
+
+Let's actually try training a linear model on XOR and watch it fail. This is the example from chapter 6 of Goodfellow's deep learning book, worked through the way Dimakis did in lecture.
+
+### Setup
+
+**Data:** the 4 XOR points with $n=4$, $D=2$:
+
+| $x_1$ | $x_2$ | $y$ |
+|---|---|---|
+| 0 | 0 | 0 |
+| 0 | 1 | 1 |
+| 1 | 0 | 1 |
+| 1 | 1 | 0 |
+
+**Model:** $f(\vec{x}) = \vec{w}^\top \vec{x} + b$ with $\vec{w} \in \mathbb{R}^2$, $b \in \mathbb{R}$. Three unknowns: $w_1, w_2, b$.
+
+**Loss:** mean squared error
+
+$$J(\theta) = \frac{1}{4}\sum_{i=1}^{4} \bigl(y_i - f(\vec{x}_i)\bigr)^2$$
+
+### Step 1: Write the Loss in Terms of Parameters
+
+Plugging in each of the four data points:
+
+$$J(w_1, w_2, b) = \tfrac{1}{4}\Big[\,(0 - b)^2 + (1 - w_2 - b)^2 + (1 - w_1 - b)^2 + (0 - w_1 - w_2 - b)^2\,\Big]$$
+
+Notice:
+- Row 1: $\vec{x}=(0,0)$ so $\hat y = b$, error $= 0 - b$
+- Row 2: $\vec{x}=(0,1)$ so $\hat y = w_2 + b$, error $= 1 - w_2 - b$
+- Row 3: $\vec{x}=(1,0)$ so $\hat y = w_1 + b$, error $= 1 - w_1 - b$
+- Row 4: $\vec{x}=(1,1)$ so $\hat y = w_1 + w_2 + b$, error $= 0 - w_1 - w_2 - b$
+
+### Step 2: Try a Specific Parameter Value
+
+<CollapsibleStep title="Compute predictions and loss at θ = (w₁, w₂, b) = (0, 1, 1)" variant="example" defaultOpen>
+
+**Predictions for the 4 points:**
+
+- $f(0,0) = 0\cdot0 + 1\cdot0 + 1 = 1$
+- $f(0,1) = 0\cdot0 + 1\cdot1 + 1 = 2$
+- $f(1,0) = 0\cdot1 + 1\cdot0 + 1 = 1$
+- $f(1,1) = 0\cdot1 + 1\cdot1 + 1 = 2$
+
+So $\hat y = (1, 2, 1, 2)$. Truth was $(0, 1, 1, 0)$.
+
+**Squared errors:** $(0-1)^2 + (1-2)^2 + (1-1)^2 + (0-2)^2 = 1 + 1 + 0 + 4 = 6$
+
+**Loss:** $J(\theta) = 6/4 = \mathbf{1.5}$
+
+</CollapsibleStep>
+
+### Step 3: Compute the Gradient
+
+The gradient is a 3-vector with one entry per parameter:
+
+$$\nabla J = \begin{pmatrix} \partial J/\partial w_1 \\ \partial J/\partial w_2 \\ \partial J/\partial b \end{pmatrix}$$
+
+Differentiating $J$ with respect to $w_1$, being careful that only two of the four terms depend on $w_1$:
+
+$$\frac{\partial J}{\partial w_1} = \frac{1}{4}\Big[\,0 + 0 + 2(1 - w_1 - b)(-1) + 2(0 - w_1 - w_2 - b)(-1)\,\Big] = \frac{1}{2}(2w_1 + w_2 + 2b - 1)$$
+
+By symmetry $w_2$ gives the mirror expression, and $b$ gives the sum:
+
+$$\nabla J(w_1, w_2, b) = \begin{pmatrix} \tfrac{1}{2}(2w_1 + w_2 + 2b - 1) \\ \tfrac{1}{2}(w_1 + 2w_2 + 2b - 1) \\ \tfrac{1}{2}(2w_1 + 2w_2 + 4b - 2) \end{pmatrix}$$
+
+### Step 4: Evaluate the Gradient at (0, 1, 1)
+
+<CollapsibleStep title="Plug in w₁ = 0, w₂ = 1, b = 1" variant="example" defaultOpen>
+
+1. $\partial J / \partial w_1 = \tfrac{1}{2}(2\cdot0 + 1 + 2\cdot1 - 1) = \tfrac{1}{2}(2) = 1$
+2. $\partial J / \partial w_2 = \tfrac{1}{2}(0 + 2\cdot1 + 2\cdot1 - 1) = \tfrac{1}{2}(3) = 3/2$
+3. $\partial J / \partial b = \tfrac{1}{2}(0 + 2\cdot1 + 4\cdot1 - 2) = \tfrac{1}{2}(4) = 2$
+
+So $\nabla J(0,1,1) = (1,\, 3/2,\, 2)$. The gradient is non-zero, so $(0,1,1)$ is **not** a local minimum. Take a step.
+
+</CollapsibleStep>
+
+### Step 5: Where Does Gradient Descent End Up?
+
+If you keep running gradient descent (or just solve the normal equations directly, since this is least-squares), you find the optimum:
+
+$$w_1^\star = 0, \quad w_2^\star = 0, \quad b^\star = \tfrac{1}{2}$$
+
+Plug in any input. The model says $f(\vec{x}) = 0\cdot x_1 + 0 \cdot x_2 + \tfrac{1}{2} = \tfrac{1}{2}$. **The optimal linear model ignores the inputs entirely** and outputs the constant 1/2 for everything.
+
+<Callout variant="warning" title="Why This Is the Optimum">
+  The mean is the constant that minimizes the sum of squared errors against any set of numbers. Two of the labels are 0 and two are 1, so the mean is 1/2. Since the four points are arranged so that no plane can fit them better than a flat plane at 1/2, the best linear model just gives up and predicts the mean.
+</Callout>
+
+Geometrically: imagine the four data points as spikes of height 0 or 1 standing at the corners of the unit square. You are trying to fit a tilted plane. No tilt helps you. The flat plane at height 1/2 minimizes total squared error.
+
+<Callout variant="warning" title="Exam Tip">
+  Be ready to compute the loss, the gradient, and a single GD step for a small example like this. The pattern is always the same: write $J$ as a sum of $(y_i - f(\vec{x}_i))^2$, differentiate term-by-term, and plug in numbers. The fact that the optimal weights are $(0, 0, 1/2)$ for XOR with squared loss is a small but well-known result.
+</Callout>
+
+---
+
+## 5. What If We Add a Hidden Layer? (Still Linear)
+
+A reasonable instinct: maybe one neuron isn't enough. Let's add a hidden layer with two neurons and see if more parameters fix it.
+
+### The Architecture
+
+<div className="my-5 rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+  <svg viewBox="0 0 560 220" style={{ width: '100%', maxWidth: '560px', display: 'block', margin: '0 auto' }}>
+    <circle cx="60" cy="80" r="22" fill="#fff" stroke="#2c5f8a" strokeWidth="2"/>
+    <text x="60" y="84" textAnchor="middle" style={{ fontFamily: 'Georgia, serif', fontSize: '14px' }} fill="#2c5f8a">x₁</text>
+    <circle cx="60" cy="160" r="22" fill="#fff" stroke="#2c5f8a" strokeWidth="2"/>
+    <text x="60" y="164" textAnchor="middle" style={{ fontFamily: 'Georgia, serif', fontSize: '14px' }} fill="#2c5f8a">x₂</text>
+    <circle cx="270" cy="80" r="22" fill="#dce9f4" stroke="#2c5f8a" strokeWidth="2"/>
+    <text x="270" y="84" textAnchor="middle" style={{ fontFamily: 'Georgia, serif', fontSize: '14px' }} fill="#2c5f8a">h₁</text>
+    <circle cx="270" cy="160" r="22" fill="#dce9f4" stroke="#2c5f8a" strokeWidth="2"/>
+    <text x="270" y="164" textAnchor="middle" style={{ fontFamily: 'Georgia, serif', fontSize: '14px' }} fill="#2c5f8a">h₂</text>
+    <circle cx="490" cy="120" r="22" fill="#fff" stroke="#a0522d" strokeWidth="2"/>
+    <text x="490" y="124" textAnchor="middle" style={{ fontFamily: 'Georgia, serif', fontSize: '14px' }} fill="#a0522d">y</text>
+    <line x1="82" y1="80" x2="248" y2="80" stroke="#7a6f5e" strokeWidth="1"/>
+    <line x1="82" y1="80" x2="248" y2="160" stroke="#7a6f5e" strokeWidth="1"/>
+    <line x1="82" y1="160" x2="248" y2="80" stroke="#7a6f5e" strokeWidth="1"/>
+    <line x1="82" y1="160" x2="248" y2="160" stroke="#7a6f5e" strokeWidth="1"/>
+    <line x1="292" y1="80" x2="468" y2="120" stroke="#7a6f5e" strokeWidth="1"/>
+    <line x1="292" y1="160" x2="468" y2="120" stroke="#7a6f5e" strokeWidth="1"/>
+    <text x="160" y="115" textAnchor="middle" style={{ fontFamily: 'monospace', fontSize: '11px' }} fill="#a0522d">W, c</text>
+    <text x="385" y="105" textAnchor="middle" style={{ fontFamily: 'monospace', fontSize: '11px' }} fill="#a0522d">w, b</text>
+    <text x="60" y="32" textAnchor="middle" style={{ fontFamily: 'monospace', fontSize: '10px', letterSpacing: '1px' }} fill="#7a6f5e">INPUT</text>
+    <text x="270" y="32" textAnchor="middle" style={{ fontFamily: 'monospace', fontSize: '10px', letterSpacing: '1px' }} fill="#7a6f5e">HIDDEN</text>
+    <text x="490" y="76" textAnchor="middle" style={{ fontFamily: 'monospace', fontSize: '10px', letterSpacing: '1px' }} fill="#7a6f5e">OUTPUT</text>
+  </svg>
+</div>
+
+Forward equations:
+
+$$\vec{h} = W^\top \vec{x} + \vec{c} \qquad y = \vec{w}^\top \vec{h} + b$$
+
+where $W$ is 2×2, $\vec{c}$ is 2×1, $\vec{w}$ is 2×1, $b$ is a scalar.
+
+### Counting Parameters
+
+| Layer | Count |
+|---|---|
+| $W$ matrix | 4 params |
+| $\vec{c}$ vector | 2 params |
+| $\vec{w} + b$ | 2 + 1 = 3 params |
+| **Total** | **9 parameters** |
+
+Three times as many as the linear model. Surely this is more powerful?
+
+### The Collapse
+
+Plug $\vec{h}$ into the output equation and use linear algebra:
+
+$$y = \vec{w}^\top(W^\top \vec{x} + \vec{c}) + b = \underbrace{(\vec{w}^\top W^\top)}_{\text{a }1\times 2\text{ row}}\vec{x} + \underbrace{(\vec{w}^\top \vec{c} + b)}_{\text{a scalar}}$$
+
+Define $\vec{w}'^\top \!=\! \vec{w}^\top W^\top$ and $b' \!=\! \vec{w}^\top \vec{c} + b$. Then:
+
+$$y = \vec{w}'^\top \vec{x} + b'$$
+
+This is just a linear model. The supposed 9-parameter network is mathematically identical to a 3-parameter linear model. We added 6 parameters and gained *nothing*.
+
+<Callout variant="key">
+  A deep **linear** model is a linear model. Period. Stacking linear layers gives you back a linear function with the same expressive power as a single layer. The extra parameters are wasted — different parameterizations of the same function.
+</Callout>
+
+The same argument extends to any number of layers. $L$ stacked linear layers compose to one linear layer. So a 1000-layer linear network on XOR will still output 1/2 for every input.
+
+<Callout variant="warning" title="Exam Tip">
+  A common conceptual question: "Show that a deep network with no nonlinearity is equivalent to a single linear layer." The answer is exactly the algebra above. Be able to do this for two and three hidden layers.
+</Callout>
+
+---
+
+## 6. Adding a ReLU Activation Breaks Linearity
+
+Take the same architecture but stick a ReLU between the hidden layer and the output:
+
+$$\vec{h} = \mathrm{ReLU}(W^\top \vec{x} + \vec{c}) \qquad y = \vec{w}^\top \vec{h} + b$$
+
+Recall ReLU clips negatives to zero and passes positives through unchanged:
+
+$$\mathrm{ReLU}(z) = \max(z, 0)$$
+
+Applied to a vector, it acts coordinate-wise. As an exercise: $\mathrm{ReLU}\bigl((5, -3, 1, 9, -217)\bigr) = (5, 0, 1, 9, 0)$.
+
+### The Magic Weights
+
+Here are weights that solve XOR. Don't worry where they came from; we'll plug them in and verify they work.
+
+$$W = \begin{pmatrix} 1 & 1 \\ 1 & 1 \end{pmatrix},\quad \vec{c} = \begin{pmatrix} 0 \\ -1 \end{pmatrix},\quad \vec{w} = \begin{pmatrix} 1 \\ -2 \end{pmatrix},\quad b = 0$$
+
+### Forward Pass on All 4 Inputs
+
+For each input $\vec{x}$, the computation is: pre-activation $\vec{a} = W^\top \vec{x} + \vec{c}$, then hidden $\vec{h} = \mathrm{ReLU}(\vec{a})$, then output $y = \vec{w}^\top \vec{h} + b$.
+
+<CollapsibleStep title="x = (0, 0) → expected y = 0" variant="example" defaultOpen>
+
+| Step | Computation |
+|---|---|
+| Pre-activation | $W^\top (0,0)^\top + \vec{c} = (0, 0)^\top + (0, -1)^\top = (0, -1)^\top$ |
+| ReLU | $\mathrm{ReLU}\bigl((0, -1)^\top\bigr) = (0, 0)^\top$ |
+| Output | $(1, -2)\cdot(0, 0) + 0 = \mathbf{0}$ ✓ |
+
+</CollapsibleStep>
+
+<CollapsibleStep title="x = (0, 1) → expected y = 1" variant="example" defaultOpen>
+
+| Step | Computation |
+|---|---|
+| Pre-activation | $W^\top (0,1)^\top + \vec{c} = (1, 1)^\top + (0, -1)^\top = (1, 0)^\top$ |
+| ReLU | $\mathrm{ReLU}\bigl((1, 0)^\top\bigr) = (1, 0)^\top$ |
+| Output | $(1, -2)\cdot(1, 0) + 0 = 1 + 0 = \mathbf{1}$ ✓ |
+
+</CollapsibleStep>
+
+<CollapsibleStep title="x = (1, 0) → expected y = 1" variant="example" defaultOpen>
+
+| Step | Computation |
+|---|---|
+| Pre-activation | $W^\top (1,0)^\top + \vec{c} = (1, 1)^\top + (0, -1)^\top = (1, 0)^\top$ |
+| ReLU | $\mathrm{ReLU}\bigl((1, 0)^\top\bigr) = (1, 0)^\top$ |
+| Output | $(1, -2)\cdot(1, 0) + 0 = \mathbf{1}$ ✓ |
+
+</CollapsibleStep>
+
+<CollapsibleStep title="x = (1, 1) → expected y = 0" variant="example" defaultOpen>
+
+| Step | Computation |
+|---|---|
+| Pre-activation | $W^\top (1,1)^\top + \vec{c} = (2, 2)^\top + (0, -1)^\top = (2, 1)^\top$ |
+| ReLU | $\mathrm{ReLU}\bigl((2, 1)^\top\bigr) = (2, 1)^\top$ |
+| Output | $(1, -2)\cdot(2, 1) + 0 = 2 - 2 = \mathbf{0}$ ✓ |
+
+</CollapsibleStep>
+
+Four for four. The network has learned XOR exactly. The crucial moment is the second coordinate of $\vec{h}$: the bias $c_2 = -1$ shifts the pre-activation negative on the inputs $(0,0)$, $(1,0)$, $(0,1)$ (where the ReLU kills it), and only positive on $(1,1)$ (where it passes through). That non-zero second coordinate is what subtracts off the over-counting that breaks XOR. Without ReLU, this subtraction never happens, because the bias just adds in linearly everywhere.
+
+<Callout variant="key">
+  ReLU is what makes neural networks expressive. The depth doesn't help on its own. The activation is doing the work.
+</Callout>
+
+### What This Network Looks Like as a Function
+
+The output $y(x_1, x_2)$ is a piecewise-linear function of the inputs. Each region where the ReLUs are either both off, only one on, or both on, is a different linear piece. The boundaries between regions are exactly where some pre-activation $a_i = 0$. For any neural network with ReLU activations, the function is always piecewise linear, with kinks where the ReLUs flip on or off.
+
+<Callout variant="intuition">
+  The example weights solve XOR exactly with 9 parameters and 4 data points. So in principle, 4 equations, 9 unknowns, infinitely many solutions. In practice you would train this with gradient descent on the squared loss, possibly with regularization to make the solution unique. The point of this example is just to show that a ReLU network *can* represent XOR. Training is a separate question.
+</Callout>
+
+---
+
+## 7. Feed-Forward Neural Network Notation
+
+Now generalize. A feed-forward network has layers. Each layer takes the activations from the previous layer, applies a linear transformation (weights + bias), then applies an activation function elementwise.
+
+### One Hidden Layer, in Symbols
+
+Inputs are $x_1, \dots, x_D$. The hidden layer has $M$ neurons. For each hidden unit $j \in \{1, \dots, M\}$:
+
+$$a_j^{(1)} = \sum_{i=1}^{D} w_{ji}^{(1)} x_i + w_{j0}^{(1)} \qquad z_j^{(1)} = h\bigl(a_j^{(1)}\bigr)$$
+
+- Superscript $(1)$: "this is in layer 1." Layer 2 weights would be $w_{kj}^{(2)}$, etc.
+- $a_j^{(1)}$ is the **pre-activation** or **logit** of unit $j$ in layer 1.
+- $z_j^{(1)} = h(a_j^{(1)})$ is the **activation** after applying $h$.
+- $w_{ji}^{(1)}$ is the weight from input $i$ to hidden unit $j$.
+- $w_{j0}^{(1)}$ is the bias for hidden unit $j$.
+
+### Adding the Output Layer
+
+For each output $k \in \{1, \dots, K\}$:
+
+$$a_k^{(2)} = \sum_{j=1}^{M} w_{kj}^{(2)} z_j^{(1)} + w_{k0}^{(2)} \qquad y_k = f\bigl(a_k^{(2)}\bigr)$$
+
+Stacking everything, the full input-to-output function of a one-hidden-layer net is:
+
+$$y_k(\vec{x}, \vec{w}) = f\!\left( \sum_{j=1}^{M} w_{kj}^{(2)}\, h\!\Big(\sum_{i=1}^{D} w_{ji}^{(1)} x_i + w_{j0}^{(1)}\Big) + w_{k0}^{(2)} \right)$$
+
+In matrix notation, far cleaner:
+
+$$\vec{y} = f\Big( W^{(2)}\, h\bigl(W^{(1)} \vec{x}\bigr) \Big)$$
+
+### Counting Parameters in a Fully-Connected Layer
+
+<Callout variant="definition" title="Parameter Count">
+  A fully-connected layer mapping $D$ inputs to $M$ outputs has $D \times M$ weights plus $M$ biases. For a transformer with $D = M = 4096$, one fully connected layer alone is $4096^2 \approx 16.8$ million parameters. This is why these layers dominate model size.
+</Callout>
+
+### Deep Networks
+
+For an $L$-layer network, the layer-$l$ activation is computed from layer $l-1$:
+
+$$\vec{z}^{(l)} = h^{(l)}\bigl(W^{(l)}\, \vec{z}^{(l-1)}\bigr), \quad l \in \{1, \dots, L\}, \quad \vec{z}^{(0)} = \vec{x}, \quad \vec{z}^{(L)} = \vec{y}$$
+
+The depth is $L$; the width is the number of units in each hidden layer. Modern networks can be very wide, very deep, or both. The number of parameters is roughly the sum of $D_l \times D_{l+1}$ across all layers.
+
+---
+
+## 8. Universal Approximation, and Why We Still Go Deep
+
+### The Theorem
+
+<Callout variant="definition" title="Cybenko 1989, Funahashi 1989">
+  Any continuous function $f: \mathbb{R}^D \to \mathbb{R}^K$ defined on a compact subset of $\mathbb{R}^D$ can be approximated to arbitrary accuracy by a neural network with a **single hidden layer**.
+</Callout>
+
+So a one-hidden-layer net is a universal function approximator. Sounds amazing. But there are three asterisks.
+
+### Three Asterisks
+
+| Concern | What the theorem says | What we actually do |
+|---|---|---|
+| How do we find the weights? | It doesn't say. | Gradient descent. Worked, eventually. |
+| How wide is the hidden layer? | Could be exponential in $D$. | For $D = 4096$, $2^D$ is more atoms than the universe. |
+| What activation do we use? | Anything reasonable except identity. | ReLU. |
+
+The width problem is the killer. The theorem is honest: *some* width works, but it might be $2^D$, which is computationally absurd. So in practice "one hidden layer can fit anything" doesn't help us.
+
+### Why Deep Instead of Fat?
+
+The answer is the same answer as for boolean circuits. *Any* boolean function can be written as a circuit with two layers of gates (sum-of-products / DNF), but in practice we build multi-layer logic circuits because using more layers can cut the gate count exponentially. Same for neural networks.
+
+<Callout variant="definition" title="The Deep Net Analogy">
+  A single-hidden-layer net memorizes everything in one wide layer with no structure. A deep net **composes** simpler features: edges into shapes, shapes into parts, parts into objects. Many functions of interest (images, language, audio) have hierarchical structure, and deep nets exploit it. Same expressive power, exponentially fewer parameters, exponentially less data needed to learn.
+</Callout>
+
+This is also why representation learning works: the intermediate layers literally learn intermediate representations. Take a trained image classifier, pick a neuron deep in the network, and ask "what makes this neuron fire?" The answer is often something interpretable (a Jennifer Aniston neuron, a curve detector, a fur detector). This is the field of *interpretability*, and it exists because neural networks are sufficiently transparent that we can poke around inside them.
+
+---
+
+## 9. The Activation Function Zoo
+
+The choice of activation matters enormously. Most of the historical pessimism about neural networks came from using the wrong activation function for 20+ years.
+
+### Why Identity Doesn't Work
+
+If you set $h(z) = z$, the whole network collapses to a linear function (we proved this above). So identity activations are useless except in specific places (like the final output of a regression network).
+
+### Why Sigmoid and Tanh Are Bad in Deep Nets
+
+Sigmoid was the historical default, motivated by biology (smooth thresholding). Its derivative is $\sigma(z)(1 - \sigma(z))$, which goes to zero when $z$ is large in magnitude (positive or negative). This is the **vanishing gradient problem**:
+
+<Callout variant="warning" title="The Killer Issue">
+  When a sigmoid neuron is highly activated (or highly negative), its gradient is essentially zero. Gradient descent can't tell the difference between "really excited" and "really inhibited" because the signal it gets back is the same: nothing. Training stalls.
+</Callout>
+
+Tanh has the same problem (it's a rescaled sigmoid). Hard tanh, the piecewise-linear approximation, has an even worse version: zero gradient outside $[-1, 1]$.
+
+### Why ReLU Works
+
+ReLU is the dumbest possible thing that has a reasonable gradient: $\mathrm{ReLU}'(z) = 1$ for $z > 0$ and $0$ for $z < 0$. It took the field 20 years to realize this dumb thing trains better than fancy sigmoids. The key property: **large positive activations still have non-zero gradient**, so gradient descent can keep adjusting.
+
+### The Full Lineup
+
+| Activation | Formula | Notes |
+|---|---|---|
+| Sigmoid | $\sigma(z) = 1/(1+e^{-z})$ | Gradient → 0 in tails. Vanishing gradient. |
+| tanh | $\tanh(z)$ | Same problem as sigmoid, just centered at 0. |
+| **ReLU** | $\max(z, 0)$ | Gradient = 1 when active. **The default choice today.** |
+| Leaky ReLU | $\max(0,z) + \alpha\cdot\min(0,z)$ | Small slope for $z < 0$ keeps gradient alive everywhere. |
+
+### Softplus, the Smooth ReLU
+
+$$h(z) = \ln(1 + e^z) \approx \begin{cases} 0 & z \ll 0 \\ z & z \gg 0 \end{cases}$$
+
+Softplus is everywhere differentiable (unlike ReLU at $z=0$) and approaches ReLU for large $|z|$. Used occasionally when smoothness is required, but ReLU usually works just as well in practice.
+
+<Callout variant="warning" title="Exam Tip">
+  Be ready to (1) compute $\mathrm{ReLU}$ of a vector elementwise, (2) explain why sigmoid causes vanishing gradients, and (3) state why an activation function is needed at all (otherwise the network collapses to a linear function).
+</Callout>
+
+---
+
+## 10. Can You Steal a Neural Network?
+
+This part cements the idea that there is no canonical set of weights for a network. Many different weights compute the same function. This has practical consequences for IP, watermarking, and backdoors.
+
+Suppose I publish my magic XOR weights. You want to copy them but make them look different so you can claim them as your own. What can you do?
+
+### Trick 1: Permute the Hidden Units
+
+The hidden units in a layer don't have a meaningful order. If I swap rows of $W^\top$ (and the corresponding entries of $\vec{c}$), and swap the corresponding entries of $\vec{w}$, the function is unchanged. With $M$ hidden units, there are $M!$ equivalent weight configurations just from permutation.
+
+### Trick 2: Rescale (Only with ReLU)
+
+ReLU is positively homogeneous: $\mathrm{ReLU}(\alpha z) = \alpha\,\mathrm{ReLU}(z)$ for $\alpha > 0$. So you can scale all the weights into a hidden unit by 5 and scale the corresponding outgoing weight by 1/5, and the function is unchanged. This works layer-by-layer, so the scaling freedom is huge.
+
+$$\mathrm{ReLU}(5\vec{w}_j \cdot \vec{x}) \times \tfrac{1}{5}w_j = \mathrm{ReLU}(\vec{w}_j \cdot \vec{x}) \times w_j$$
+
+### Watermarking
+
+If I'm careful, I can train my network to give a specific (silly) output on a specific (silly) input that no other network would produce. Then if someone is suspected of stealing, I send the silly input and check the output. This is the same idea as deliberately seeding errors in 17th-century logarithm tables to detect plagiarism.
+
+### Backdoors
+
+A scarier version: train the network to behave normally on most inputs but produce a target output on a secret trigger input. The weights look fine. The network passes all standard tests. Only the attacker knows the trigger. This is an active research area in adversarial ML.
+
+<Callout variant="note" title="Why This Works at All">
+  All of these manipulations are pure linear algebra on the weight matrices, plus exploiting the structure of ReLU. Once you internalize that a neural network is just *matrix multiplies and ReLUs*, you can reason about its symmetries directly.
+</Callout>
+
+---
+
+## 11. PyTorch in 10 Lines
+
+The lecture only briefly introduced PyTorch. The full tutorials live at `docs.pytorch.org/tutorials`. Here's the minimum to know.
+
+### Three Concepts
+
+| Concept | What It Does |
+|---|---|
+| `torch.tensor` | Like numpy.ndarray. Holds data, weights, activations. Lives on CPU or GPU. Tracks gradient computation. |
+| `nn.Module` | Base class for models and layers. You define `__init__` (parameters) and `forward` (computation). |
+| `autograd` | Calling `loss.backward()` automatically computes gradients of the loss w.r.t. every parameter. |
+
+### The Training Loop
+
+```python
+# forward
+pred = model(x)
+loss = loss_fn(pred, y)
+
+# backward
+model.zero_grad()
+loss.backward()
+
+# update (you do this manually or use an optimizer)
+for p in model.parameters():
+    p.data -= lr * p.grad
+```
+
+That's it. Define a model, write a loss, call `backward()`, update parameters. The next lecture covers automatic differentiation in detail.
+
+---
+
+## 12. Summary
+
+| Concept | Key Fact | Why It Matters |
+|---|---|---|
+| **Manifold hypothesis** | Real data lives in low-dim manifolds inside huge input spaces. | Justifies using NNs over fixed bases like polynomials. |
+| **Artificial neuron** | $y = f(\vec{w}^\top \vec{x})$ with bias absorbed via $x_0 = 1$. | Building block of everything that follows. |
+| **XOR not linearly separable** | No linear model (any depth, no nonlinearity) can learn XOR. | Motivates the need for activation functions. |
+| **Optimal linear model on XOR** | $(w_1, w_2, b) = (0, 0, 1/2)$, predicts 1/2 always. | Concrete example you should be able to derive. |
+| **Deep linear collapse** | $L$ linear layers $=$ one linear layer. Algebraically. | Without nonlinearity, depth gives nothing. |
+| **ReLU XOR network** | One hidden layer of width 2 with ReLU solves XOR exactly. | Concrete proof that nonlinearity helps. |
+| **Universal approximation** | One hidden layer can approximate any continuous function. | True but requires exponential width. |
+| **Why deep** | Hierarchical structure means deep nets need exponentially fewer parameters than wide ones. | This is why we use depth in practice. |
+| **Vanishing gradient** | Sigmoid/tanh derivatives are 0 in tails, killing gradient descent. | Why ReLU replaced sigmoid as the default. |
+| **ReLU** | $\max(z, 0)$; gradient 1 for $z>0$, 0 for $z<0$. Piecewise-linear. | The activation that makes deep nets train. |
+
+<Callout variant="key">
+  The XOR worked example is the whole lecture in miniature. A linear model fails completely (predicts 1/2). A deep linear model fails for the same reason (it is a linear model). A one-hidden-layer ReLU network succeeds. Depth is necessary but not sufficient. The activation function is doing the work.
+</Callout>
+
+### Things You Should Be Able to Do on Demand
+
+1. Write the squared loss for a small linear model and a small dataset.
+2. Compute the gradient of that loss with respect to each parameter.
+3. Take one step of gradient descent given a learning rate.
+4. Run a forward pass through a small ReLU network given specific weights and an input.
+5. Show that two stacked linear layers compose to one linear layer (algebra).
+6. Apply ReLU to a vector elementwise.
+7. Count parameters in a fully-connected layer (input dim × output dim + output dim).
+8. Explain why sigmoid causes vanishing gradients.
+9. State the universal approximation theorem and at least one of its caveats.

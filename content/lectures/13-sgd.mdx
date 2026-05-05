@@ -1,0 +1,594 @@
+---
+lecture: 13
+title: "Stochastic Gradient Descent"
+description: "From batch GD to SGD. Taylor derivation of the update rule, convergence analysis, momentum, Adam, and why mini-batches are all anyone uses."
+tags:
+  - { label: "Optimization", type: "math" }
+  - { label: "SGD", type: "concept" }
+  - { label: "Adam", type: "concept" }
+  - { label: "Convergence", type: "proof" }
+readTime: 40
+status: published
+date: "2025-02-10"
+prereqs:
+  - "03-linear-regression"
+---
+
+<Callout variant="note" title="Contents">
+1. Linear Regression as Optimization
+2. The Batch Gradient Descent Algorithm
+3. Deriving GD from Taylor Approximation
+4. Convex Functions and Local Minima
+5. Learning Rate and Convergence (Quadratic Example)
+6. Convergence via Hessian Eigendecomposition
+7. Momentum
+8. Adaptive Learning Rates: AdaGrad, RMSProp, Adam
+9. Stochastic Gradient Descent and Mini-Batches
+10. Learning Rate Schedules and Initialization
+11. **Exam Prep: Practice Problems (8 problems with solutions)**
+</Callout>
+
+## 1. Linear Regression as Optimization
+
+We have $n$ training samples $\{(x_i, y_i)\}_{i=1}^n$ where each $x_i \in \mathbb{R}^d$ is a feature vector and $y_i \in \mathbb{R}$ is a target. The linear model predicts:
+
+$$f(x) = w^\top x$$
+
+where $w \in \mathbb{R}^d$ is the weight vector. Think of the house price example: $x$ contains features like square footage, number of bedrooms, number of bathrooms. The weight $w_1$ for square footage should be positive (more square feet = higher price), and its magnitude depends on the units you measure price in.
+
+<Callout variant="definition" title="Training Loss">
+
+$$L(w) = \sum_{i=1}^{n} \bigl(f(x_i) - y_i\bigr)^2 = \sum_{i=1}^{n} \bigl(w^\top x_i - y_i\bigr)^2$$
+
+This is a function of $w$, not $x$. The data $(x_i, y_i)$ are fixed constants. We are choosing $w$ to minimize this.
+</Callout>
+
+**Optimization vs. machine learning.** Optimization minimizes the training loss. Machine learning cares about generalization to unseen test data. You can do spectacularly on training and terribly on test (overfitting), or terribly on both (underfitting). The gap between training and test performance is the central tension of ML.
+
+**Notation.** In matrix form: $X \in \mathbb{R}^{n \times d}$ has rows $x_i^\top$, $y \in \mathbb{R}^n$ stacks the labels. The loss becomes $L(w) = \|Xw - y\|_2^2$. We have $n$ terms in the sum, each involving all $d$ parameters. For modern models (LLMs), $n$ can be trillions of tokens and $d$ can be billions of parameters.
+
+## 2. The Batch Gradient Descent Algorithm
+
+We want to minimize $E(w)$ over $w$. The idea: start from some initial guess, then repeatedly step in the direction that decreases the error fastest.
+
+<Callout variant="note" title="Batch GD Algorithm">
+
+$w^{(0)} \leftarrow \text{Initialize()}$ &nbsp;&nbsp; *(typically small random values)*
+
+**for** $\tau = 1, \ldots, \tau_{\max}$:
+
+&emsp;$w^{(\tau)} = w^{(\tau-1)} - \eta\, \nabla E(w^{(\tau-1)})$
+
+&emsp;**if** $\text{Converged}(w^{(\tau)},\, w^{(\tau-1)},\, \varepsilon)$: terminate
+</Callout>
+
+The pieces:
+
+- $w$: the parameter vector we are learning ($d$ components, one per feature).
+- $\nabla E(w)$: the gradient of the error w.r.t. $w$. This is a vector of partial derivatives $(\partial E / \partial w_1, \ldots, \partial E / \partial w_d)$. It points in the direction of steepest *increase* in error, so we subtract it.
+- $\eta$: the learning rate (step size), a small positive scalar like 0.1.
+- The gradient has the same dimensions as $w$. Otherwise $w^{(\tau-1)} - \eta \nabla E$ would be a dimension mismatch.
+
+## 3. Deriving GD from Taylor Approximation
+
+Why does the update rule $w_{t+1} = w_t - \eta \nabla f(w_t)$ make sense? We can derive it from scratch.
+
+We want to minimize some complicated function $f$. The idea: at the current point $x_t$, approximate $f$ with a first-order Taylor expansion (a linear approximation), but add a penalty that prevents us from stepping too far away from $x_t$ (since the linear approximation is only valid locally).
+
+$$x_{t+1} = \arg\min_x \left[ f(x_t) + \nabla f(x_t)^\top (x - x_t) + \frac{1}{2\eta}\|x - x_t\|^2 \right]$$
+
+The three terms: $f(x_t)$ is a constant (doesn't depend on $x$). The middle term is the linear approximation. The last term is a quadratic penalty controlled by $\eta$ — smaller $\eta$ means we stay closer to $x_t$.
+
+### Taking the gradient and setting to zero
+
+$$\nabla_x \left[ f(x_t) + \nabla f(x_t)^\top(x - x_t) + \frac{1}{2\eta}\|x - x_t\|^2 \right] = 0$$
+
+$$0 + \nabla f(x_t) + \frac{1}{\eta}(x - x_t) = 0$$
+
+Key vector calculus facts used here:
+
+- $\nabla_x (a^\top x) = a$ for fixed vector $a$
+- $\nabla_x \|x - a\|^2 = 2(x-a)$, and the $\frac{1}{2}$ cancels the 2
+
+Solving for $x$:
+
+<Callout variant="key">
+
+$$x^* = x_t - \eta \cdot \nabla f(x_t)$$
+
+This is exactly the gradient descent update. The step size $\eta$ controls how far we move from the current point.
+</Callout>
+
+### Second-order conditions
+
+In the scalar case, you check the second derivative is positive to confirm a minimum. In the vector case, the second derivative generalizes to the **Hessian** $H = \nabla^2 E$, a $d \times d$ matrix. The check generalizes to: $H$ must be **positive semidefinite** (PSD). If all eigenvalues of $H$ are positive, you have a minimum. If all are negative, a maximum. Mixed signs give a saddle point.
+
+## 4. Convex Functions and Local Minima
+
+**Convex functions** are the family of "nice" functions where gradient descent can provably find the global minimum. They look like bowls — every local minimum is the global minimum.
+
+The most important fact for this class: **when $f(x) = w^\top x$ (linear model), the squared loss is always convex.** So linear regression has no local minima problem. But the moment you add nonlinearities (quadratic terms, neural network activations), the loss can become non-convex with bad local minima.
+
+For 50 years, people said gradient descent on neural networks would get stuck in local minima. Turns out the loss landscapes of large networks tend to be very flat — they don't have the pathological wavy shape people feared. This is still a mystery under active research.
+
+## 5. Learning Rate and Convergence (Quadratic Example)
+
+Even for the simplest functions, gradient descent can fail if you set the learning rate wrong.
+
+### Example: $f(x) = 3x^2 + 4x - 2$
+
+**Direct solution.** $f'(x) = 6x + 4 = 0$ gives $x^* = -2/3$. The second derivative is 6 > 0, confirming this is a minimum.
+
+**Gradient descent.** Plugging the gradient into the update rule:
+
+$$x_{t+1} = x_t - \eta(6x_t + 4) = (1 - 6\eta)x_t - 4\eta$$
+
+Iterating this formula (substituting the expression for $x_t$ repeatedly):
+
+$$x_{t+1} = (1-6\eta)^t \cdot x_1 - \bigl[(1-6\eta)^{t-1} + (1-6\eta)^{t-2} + \cdots + 1\bigr] \cdot 4\eta$$
+
+The bracketed sum is a geometric series with ratio $a = (1-6\eta)$:
+
+$$\sum_{k=0}^{t-1} a^k = \frac{1 - a^t}{1 - a} \quad \text{valid when } |a| < 1$$
+
+Substituting $a = (1-6\eta)$:
+
+$$x_{t+1} = (1-6\eta)^t \cdot x_1 - \frac{1-(1-6\eta)^t}{6\eta} \cdot 4\eta$$
+
+<Callout variant="key">
+
+**Convergence condition:** $|1 - 6\eta| < 1$, which gives $0 < \eta < 1/3$.
+
+**As $t \to \infty$:** the $(1-6\eta)^t$ terms vanish (regardless of starting point $x_1$), and the limit is $-4\eta / (6\eta) = -2/3$, matching the direct solution.
+</Callout>
+
+### Three scenarios
+
+- **$\eta$ small enough:** smooth convergence from one side, decreasing steps.
+- **$\eta$ moderate (but valid):** oscillating convergence — alternating sides of the minimum, but shrinking. This happens when $(1-6\eta) < 0$.
+- **$\eta$ too large:** overshooting and divergence — each bounce is larger than the last.
+
+## 6. Convergence via Hessian Eigendecomposition
+
+The quadratic example generalizes to multiple dimensions using the Hessian's eigenstructure. This section explains why gradient descent oscillates in "valleys" and why the condition number matters.
+
+### Quadratic approximation at a minimum
+
+At a minimum $w^*$ where $\nabla E(w^*) = 0$, the second-order Taylor expansion is:
+
+$$\tilde{E}(w) = E(w^*) + \frac{1}{2}(w - w^*)^\top H\,(w - w^*)$$
+
+where $H = \nabla^2 E|_{w=w^*}$ is the Hessian evaluated at the minimum.
+
+### Eigendecomposition
+
+Decompose the Hessian: $Hu_i = \lambda_i u_i$, where $u_i$ are orthonormal eigenvectors and $\lambda_i$ are eigenvalues. Apply a change of variables:
+
+$$w - w^* = \sum_i \alpha_i u_i, \quad \text{where } \alpha_i = (w - w^*)^\top u_i$$
+
+Here $\alpha_i$ is the distance from the minimum along the direction $u_i$. Substituting into the quadratic form (using the eigenvector equation and orthonormality $u_i^\top u_j = \delta_{ij}$):
+
+$$\tilde{E}(\alpha) = E(w^*) + \frac{1}{2}\sum_i \alpha_i^2 \lambda_i$$
+
+This is just a sum of independent quadratics, one per eigendirection.
+
+### Gradient descent in eigenspace
+
+The gradient w.r.t. $\alpha_i$ is $\alpha_i \lambda_i$, so the GD update becomes:
+
+$$\alpha_i^{(\tau)} = \alpha_i^{(\tau-1)} - \eta \alpha_i^{(\tau-1)}\lambda_i = (1 - \eta\lambda_i)\,\alpha_i^{(\tau-1)}$$
+
+After $T$ steps:
+
+<Callout variant="key">
+
+$$\alpha_i^{(T)} = (1 - \eta\lambda_i)^T\,\alpha_i^{(0)}$$
+
+Each eigendirection converges independently. Convergence to $\alpha_i = 0$ (meaning $w = w^*$) requires $|1 - \eta\lambda_i| < 1$ for every eigenvalue.
+</Callout>
+
+### The condition number problem
+
+The convergence condition $|1 - \eta\lambda_i| < 1$ for all $i$ means $\eta < 2/\lambda_{\max}$. But the slowest-converging direction is the one with the smallest eigenvalue $\lambda_{\min}$. With $\eta$ set to its maximum $2/\lambda_{\max}$, convergence along the $\lambda_{\min}$ direction is governed by:
+
+$$\left(1 - \frac{2\lambda_{\min}}{\lambda_{\max}}\right)^T$$
+
+The ratio $\lambda_{\max}/\lambda_{\min}$ is the **condition number**. When it is large, the error surface looks like a long narrow valley. GD oscillates across the narrow direction (high curvature, $\lambda_{\max}$) while making painfully slow progress along the valley floor (low curvature, $\lambda_{\min}$). Near a minimum, contours of constant error are ellipses aligned with the Hessian eigenvectors, with axes proportional to $1/\sqrt{\lambda_i}$.
+
+## 7. Momentum
+
+Momentum addresses ill-conditioning by accumulating velocity in consistent directions, like a ball rolling downhill.
+
+<Callout variant="definition" title="Momentum Update">
+
+$$\Delta w^{(\tau-1)} = -\eta\,\nabla E\bigl(w^{(\tau-1)}\bigr) + \mu\,\Delta w^{(\tau-2)}$$
+
+$$w^{(\tau)} = w^{(\tau-1)} + \Delta w^{(\tau-1)}$$
+
+$\mu \in [0, 1)$ is the momentum parameter, typically $\mu = 0.9$.
+</Callout>
+
+### How momentum helps: two cases
+
+**Flat directions** (gradient roughly constant across steps). Successive momentum terms all point the same way, so we get a geometric series:
+
+$$\Delta w^{(\infty)} = -\eta\,\nabla E\,(1 + \mu + \mu^2 + \cdots) = -\frac{\eta}{1-\mu}\,\nabla E$$
+
+Momentum *increases* the effective learning rate from $\eta$ to $\eta/(1-\mu)$. With $\mu = 0.9$, that is a 10x speedup.
+
+**Steep/oscillating directions** (gradient alternates sign). Successive terms partially cancel:
+
+$$\Delta w^{(\infty)} = -\eta\,\nabla E\,(1 - \mu + \mu^2 - \cdots) = -\frac{\eta}{1+\mu}\,\nabla E$$
+
+Momentum *decreases* the effective learning rate to $\eta/(1+\mu)$. Oscillations are dampened.
+
+Net effect: faster progress along the valley, reduced oscillations across it.
+
+**Nesterov momentum** is a variant where you first take a step based on previous momentum, then evaluate the gradient at the new position. It can improve convergence for batch GD.
+
+## 8. Adaptive Learning Rates: AdaGrad, RMSProp, Adam
+
+These algorithms maintain per-parameter learning rates that adjust automatically based on gradient history.
+
+### AdaGrad (developed at UC Berkeley)
+
+Tracks the cumulative sum of squared gradients per parameter, then scales the learning rate inversely:
+
+$$r_i^{(\tau)} = r_i^{(\tau-1)} + \left(\frac{\partial E}{\partial w_i}\right)^2, \qquad w_i^{(\tau)} = w_i^{(\tau-1)} - \frac{\eta}{\sqrt{r_i^{(\tau)} + \epsilon}}\;\frac{\partial E}{\partial w_i}$$
+
+Parameters with large historical gradients (high curvature) get smaller learning rates. The problem: $r_i$ grows monotonically, so learning rates can shrink too much late in training.
+
+### RMSProp
+
+Fixes AdaGrad by replacing the cumulative sum with an exponentially weighted average, focusing on recent gradients:
+
+$$r_i^{(\tau)} = \beta\,r_i^{(\tau-1)} + (1-\beta)\left(\frac{\partial E}{\partial w_i}\right)^2$$
+
+Typical $\beta = 0.9$. The weight update uses the same formula as AdaGrad but with this exponentially-decayed $r_i$.
+
+### Adam = RMSProp + Momentum
+
+The most widely used optimizer in deep learning. Maintains exponential moving averages of both the gradient (first moment, like momentum) and the squared gradient (second moment, like RMSProp):
+
+$$s_i^{(\tau)} = \beta_1\,s_i^{(\tau-1)} + (1-\beta_1)\,\frac{\partial E}{\partial w_i} \qquad \text{(momentum)}$$
+
+$$r_i^{(\tau)} = \beta_2\,r_i^{(\tau-1)} + (1-\beta_2)\left(\frac{\partial E}{\partial w_i}\right)^2 \qquad \text{(RMSProp)}$$
+
+Bias correction (needed because $s$ and $r$ are initialized to zero):
+
+$$\hat{s}_i^{(\tau)} = \frac{s_i^{(\tau)}}{1-\beta_1^\tau}, \qquad \hat{r}_i^{(\tau)} = \frac{r_i^{(\tau)}}{1-\beta_2^\tau}$$
+
+The weight update:
+
+$$w_i^{(\tau)} = w_i^{(\tau-1)} - \eta\,\frac{\hat{s}_i^{(\tau)}}{\sqrt{\hat{r}_i^{(\tau)}} + \delta}$$
+
+Typical values: $\beta_1 = 0.9$, $\beta_2 = 0.99$, $\delta = 10^{-8}$.
+
+## 9. Stochastic Gradient Descent and Mini-Batches
+
+### The cost problem
+
+Full-batch gradient descent requires computing the gradient over all $n$ data points at every step. The cost per update is $O(nd)$. For training GPT-scale models ($n$ = trillions of tokens, $d$ = billions of parameters), this is totally infeasible — you cannot even fit all the data on the GPU at once.
+
+### Key insight
+
+The training error is an empirical estimate of the expected test error. The loss at a single data point is also an unbiased (but noisy) estimate of the same thing. So the gradient computed from a single randomly sampled point approximates the true gradient:
+
+$$\nabla E_i(w) = 2\bigl(w^\top x^{(i)} - y^{(i)}\bigr)\,x^{(i)} \;\approx\; \nabla E(w)$$
+
+### SGD algorithm
+
+<Callout variant="note" title="SGD Algorithm">
+
+$w^{(0)} \leftarrow \text{Initialize()}$
+
+**for** $\tau = 1, \ldots, \tau_{\max}$:
+
+&emsp;$n \leftarrow \text{RandomInteger}(0, N)$
+
+&emsp;$w^{(\tau)} = w^{(\tau-1)} - \eta\, \nabla E_n(w^{(\tau-1)})$
+
+&emsp;**if** Converged: terminate
+</Callout>
+
+Cost per step: $O(d)$ instead of $O(nd)$.
+
+### Mini-batch SGD
+
+In practice, nobody uses a single point. You use a **mini-batch** of $B$ randomly sampled points:
+
+$$\nabla E_\mathcal{B}(w) = \frac{1}{B}\sum_{b=1}^{B} \nabla L\bigl(t_{\mathcal{B}_b},\; f_w(x_{\mathcal{B}_b})\bigr)$$
+
+| Method | Gradient from | Cost per step |
+|--------|---------------|---------------|
+| SGD (batch = 1) | 1 random point | $O(d)$ |
+| Mini-batch SGD | $B$ random points | $O(Bd)$ |
+| Full batch GD | All $n$ points | $O(nd)$ |
+
+In practice we shuffle the data, then iterate through consecutive blocks of size $B$. One **epoch** = one complete pass through all the data = $n/B$ gradient steps.
+
+### Batch size trade-offs
+
+**Larger $B$:** better gradient estimate (lower variance), exploits GPU parallelism. But diminishing returns — gradient estimation error decreases as $\sigma/\sqrt{B}$, so increasing $B$ by 100x only reduces the error by 10x.
+
+**Smaller $B$:** cheaper per step, so you can take more steps. More stochasticity can also help escape local minima, since a stationary point of the full loss is generally not stationary for individual data points.
+
+**In practice:** pick the largest $B$ that fits in GPU memory. If you have 8GB VRAM, you compute how many rows fit. The batch size is controlled by hardware.
+
+## 10. Learning Rate Schedules and Initialization
+
+### Learning rate schedules
+
+Start with a larger $\eta$ for fast initial progress, then decay to ensure convergence.
+
+- **Linear:** $\eta^{(\tau)} = (1 - \tau/T)\,\eta_{\text{start}} + (\tau/T)\,\eta_{\text{end}}$
+- **Power law:** $\eta^{(\tau)} = \eta_{\text{start}}(1 + \tau/s)^{-c}$
+- **Exponential:** $\eta^{(\tau)} = \eta_{\text{start}}\,c^{\lfloor\tau/s\rfloor}$
+- **Cosine** (common for LLM training): $\eta^{(\tau)} = \eta_{\min} + \tfrac{1}{2}(\eta_{\max} - \eta_{\min})(1 + \cos(\tau\pi / T))$
+
+The learning rate is probably the single most important hyperparameter in deep learning. Frontier labs run many experiments with different schedules.
+
+### Parameter initialization
+
+You must **break symmetry** — if all weights start identical, they receive identical gradients and remain identical forever (redundant units). Initialize randomly.
+
+**He initialization** (for ReLU networks): draw weights from $\mathcal{N}(0, \epsilon^2)$ with $\epsilon = \sqrt{2/M}$, where $M$ is the number of inputs to the unit. This keeps the variance of pre-activations stable across layers. Biases are typically set to small positive values so ReLU units start active.
+
+---
+
+## Exam Prep: Practice Problems
+
+### How this material is likely to be tested
+
+Based on the SP26 midterm (Q6, "On a Downward Spiral," 11 pts), here is what to expect. GD/SGD questions in CS 189 follow a very specific format:
+
+- **Compute-by-hand problems.** They give you a tiny dataset (2-4 points, 2-3 features), a specific $w$ and $\eta$, and ask you to execute one or two GD steps. You need to produce the gradient, the updated weights, and the loss before/after. Arithmetic mistakes are the main risk here.
+- **SGD vs. full-batch comparison.** They ask you to compute the stochastic gradient for a specific data point, then reason about how it relates to the full-batch gradient. The answer is usually that they can differ in direction, magnitude, or even be zero when the full batch is not.
+- **Conceptual multiple choice.** These test whether you understand convergence conditions, what ill-conditioning means in practice, why momentum or Adam help, or which models require iterative optimization vs. having closed-form solutions.
+- **Short derivations.** Derive the gradient of the squared loss in summation form. Derive the convergence condition for a scalar quadratic. These are 2-3 line proofs.
+
+They do *not* typically ask you to memorize the full Adam equations or derive GD from the Taylor approximation on an exam. Those are for building understanding; the tested skills are more mechanical.
+
+---
+
+### Problem 1: Full GD step computation
+
+> *Source: SP26 Midterm, Q6b (adapted). This is the most common question format.*
+
+<Callout variant="note" title="Problem">
+Consider the dataset below with linear model $f(x) = w^\top x$ (no bias) and squared loss $J(w) = \sum_{i=1}^{3}(w^\top x^{(i)} - y^{(i)})^2$.
+
+| Point | $x_1$ | $x_2$ | $y$ |
+|-------|--------|--------|-----|
+| 1 | 1 | 0 | 1 |
+| 2 | 0 | 1 | 2 |
+| 3 | 1 | 1 | 4 |
+
+Let $w^{(t)} = [1, 1]^\top$ and $\eta = 0.1$. **(a)** Compute $\nabla_w J(w^{(t)})$. **(b)** Compute $w^{(t+1)}$. **(c)** Compute $J(w^{(t)})$ and $J(w^{(t+1)})$. Did the loss decrease?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a)** First compute residuals $r_i = w^\top x^{(i)} - y^{(i)}$:
+
+| Point | $w^\top x^{(i)}$ | $y^{(i)}$ | Residual | Gradient contribution: $2r_i \cdot x^{(i)}$ |
+|-------|-------------------|-----------|----------|----------------------------------------------|
+| 1 | $1(1) + 1(0) = 1$ | 1 | 0 | $[0, 0]^\top$ |
+| 2 | $1(0) + 1(1) = 1$ | 2 | $-1$ | $[0, -2]^\top$ |
+| 3 | $1(1) + 1(1) = 2$ | 4 | $-2$ | $[-4, -4]^\top$ |
+
+$$\nabla_w J = [0,0]^\top + [0,-2]^\top + [-4,-4]^\top = [-4, -6]^\top$$
+
+**(b)** $w^{(t+1)} = [1,1]^\top - 0.1[-4,-6]^\top = [1.4, 1.6]^\top$
+
+**(c)** $J(w^{(t)}) = 0^2 + 1^2 + 2^2 = 5$. For $w^{(t+1)}$: predictions are $1.4, 1.6, 3.0$, so $J(w^{(t+1)}) = 0.16 + 0.16 + 1.0 = 1.32$. Yes, loss decreased.
+</CollapsibleStep>
+
+---
+
+### Problem 2: SGD gradient vs. full-batch gradient
+
+> *Source: SP26 Midterm, Q6c. Tests understanding of stochastic approximation.*
+
+<Callout variant="note" title="Problem">
+Using the same dataset and $w^{(t)} = [1,1]^\top$ from Problem 1, the SGD gradient for data point $i$ is $\hat{g}_i(w) = 2(w^\top x^{(i)} - y^{(i)})\,x^{(i)}$.
+
+**(a)** Compute $\hat{g}_1(w^{(t)})$.
+
+**(b)** Compute $\hat{g}_3(w^{(t)})$.
+
+**(c)** True or false: the SGD gradient always points in the same direction as the full-batch gradient.
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a)** Point 1 has residual $= 0$, so $\hat{g}_1 = 2(0)[1,0]^\top = [0,0]^\top$. The stochastic gradient is zero because this particular point happens to be perfectly predicted at the current $w$, even though the full-batch gradient is $[-4,-6]^\top \neq 0$.
+
+**(b)** Point 3 has residual $= -2$, so $\hat{g}_3 = 2(-2)[1,1]^\top = [-4,-4]^\top$.
+
+**(c)** False. $\hat{g}_3 = [-4,-4]^\top$ and $\nabla J = [-4,-6]^\top$ point in different directions (they share the same first component but differ in the second). More dramatically, $\hat{g}_1 = [0,0]^\top$ has no direction at all.
+</CollapsibleStep>
+
+---
+
+### Problem 3: Convergence condition for a scalar quadratic
+
+> *Source: Lecture 13 transcript (professor's board work) and Lecture 12 slides, slide 18-19.*
+
+<Callout variant="note" title="Problem">
+Consider $f(x) = 5x^2 - 6x + 1$.
+
+**(a)** Find the minimizer $x^*$ directly.
+
+**(b)** Write one step of gradient descent: $x_{t+1}$ in terms of $x_t$ and $\eta$.
+
+**(c)** For what range of $\eta$ does gradient descent converge?
+
+**(d)** What does GD converge to as $t \to \infty$ (assuming valid $\eta$)?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a)** $f'(x) = 10x - 6 = 0$ gives $x^* = 3/5$. Second derivative is $10 > 0$, so this is a minimum.
+
+**(b)** $x_{t+1} = x_t - \eta(10x_t - 6) = (1 - 10\eta)x_t + 6\eta$.
+
+**(c)** The iteration involves the factor $(1 - 10\eta)^t$. For convergence we need $|1 - 10\eta| < 1$, which gives $0 < \eta < 1/5$.
+
+**(d)** As $t \to \infty$, the $(1-10\eta)^t$ term vanishes. The remaining terms give $x \to 6\eta / (10\eta) = 3/5$, matching the direct solution.
+</CollapsibleStep>
+
+---
+
+### Problem 4: Ill-conditioning and feature scaling
+
+> *Source: SP26 Midterm, Q6d. Also connects to Lecture 12 slides on condition number (slides 20-21).*
+
+<Callout variant="note" title="Problem">
+Suppose you have a dataset with two features $x_1$ (square footage, values in thousands) and $x_2$ (number of bedrooms, values 1-5). You run gradient descent and observe that the loss oscillates wildly along $w_1$ while barely making progress along $w_2$.
+
+**(a)** Explain why this is happening in terms of the Hessian eigenvalues.
+
+**(b)** Which of the following would most directly fix the root cause: (i) decrease $\eta$, (ii) standardize the features, (iii) add L2 regularization, (iv) use more data?
+
+**(c)** After standardization, what happens to the condition number of $X^\top X$?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a)** The Hessian of the squared loss is $H = 2X^\top X$. When feature scales differ drastically, $X^\top X$ has eigenvalues with a large ratio $\lambda_{\max}/\lambda_{\min}$ (large condition number). The maximum allowed learning rate is $\eta < 2/\lambda_{\max}$, which is small because of the large-scale feature. But this $\eta$ is way too small for the small-eigenvalue direction, so progress there is extremely slow. The result: fast oscillation in the high-curvature direction, glacial progress in the low-curvature direction.
+
+**(b)** **(ii) Standardize the features.** This directly addresses the scale mismatch. Decreasing $\eta$ prevents divergence but makes the slow direction even slower. L2 regularization adds $\lambda I$ to the Hessian, which helps slightly but doesn't fix the root cause. More data is irrelevant.
+
+**(c)** The condition number decreases (gets closer to 1). Standardization makes the features comparable in scale, so the eigenvalues of $X^\top X$ become more similar.
+</CollapsibleStep>
+
+---
+
+### Problem 5: Momentum effective learning rate
+
+> *Source: Lecture 12 slides, slides 25-26. Bishop Ch. 7, equations (7.31)-(7.33).*
+
+<Callout variant="note" title="Problem">
+Gradient descent with momentum uses the update $\Delta w^{(\tau)} = -\eta \nabla E(w^{(\tau)}) + \mu \Delta w^{(\tau-1)}$ with $\mu = 0.9$ and $\eta = 0.01$.
+
+**(a)** In a direction where the gradient is roughly constant (flat valley), what is the effective learning rate?
+
+**(b)** In a direction where the gradient alternates sign every step (oscillating across a narrow valley), what is the effective learning rate?
+
+**(c)** Does momentum make gradient descent more or less sensitive to ill-conditioning? Why?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a)** Flat direction: the momentum terms form a geometric series $1 + \mu + \mu^2 + \cdots = 1/(1-\mu)$. Effective learning rate $= \eta/(1-\mu) = 0.01/0.1 = 0.1$. That is 10 times faster than vanilla GD.
+
+**(b)** Oscillating direction: alternating signs give $1 - \mu + \mu^2 - \cdots = 1/(1+\mu)$. Effective learning rate $= \eta/(1+\mu) = 0.01/1.9 \approx 0.0053$. Oscillations are dampened.
+
+**(c)** Less sensitive. Momentum accelerates the slow (flat) direction while damping the fast (steep/oscillating) direction. This partially compensates for the eigenvalue mismatch that causes ill-conditioning.
+</CollapsibleStep>
+
+---
+
+### Problem 6: Mini-batch SGD mechanics
+
+> *Source: Lecture 13 transcript and Lecture 12 slides, slides 44-49.*
+
+<Callout variant="note" title="Problem">
+**(a)** You have $n = 10{,}000$ data points and use mini-batch SGD with batch size $B = 64$. How many gradient steps are in one epoch?
+
+**(b)** What is the computational cost per gradient step (in terms of $B$ and $d$)?
+
+**(c)** You double the batch size from 64 to 128. By what factor does the standard deviation of the gradient estimate decrease?
+
+**(d)** Name one advantage of SGD (small batch) over full-batch GD, beyond computational cost.
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a)** $\lfloor n / B \rfloor = \lfloor 10{,}000 / 64 \rfloor = 156$ gradient steps per epoch (the remaining 16 points form a smaller final batch, depending on implementation).
+
+**(b)** $O(Bd)$ per step. Each of the $B$ points contributes an $O(d)$ gradient computation.
+
+**(c)** The standard deviation of the gradient estimate scales as $\sigma / \sqrt{B}$. Doubling $B$ reduces it by a factor of $\sqrt{2} \approx 1.41$. This is the diminishing-returns argument: 2x the compute for only 1.41x better gradient.
+
+**(d)** Stochastic noise can help escape local minima. A stationary point of the full loss is generally not stationary for any single data point, so the noisy SGD gradient provides a "push" away from shallow local minima that would trap full-batch GD.
+</CollapsibleStep>
+
+---
+
+### Problem 7: Which models need GD?
+
+> *Source: SP26 Midterm, Q6e. This is a common "last part" conceptual question.*
+
+<Callout variant="note" title="Problem">
+For each of the following, state whether it has a closed-form optimal solution or requires an iterative method like gradient descent. Briefly explain why.
+
+1. Ordinary least squares linear regression
+2. Ridge regression ($\lambda > 0$)
+3. Logistic regression
+4. Training a neural network with ReLU activations
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**1. OLS:** Closed form. $\hat{w} = (X^\top X)^{-1}X^\top y$. Setting $\nabla J = 0$ gives a linear system in $w$.
+
+**2. Ridge:** Closed form. $\hat{w} = (X^\top X + \lambda I)^{-1}X^\top y$. The regularization term is quadratic in $w$, so $\nabla J = 0$ is still a linear system.
+
+**3. Logistic regression:** No closed form. The sigmoid function $\sigma(w^\top x)$ makes $\nabla J = 0$ a nonlinear system that cannot be solved analytically. Must use GD or Newton's method.
+
+**4. Neural network:** No closed form. The composition of nonlinear activations creates a highly non-convex loss surface with no analytical solution. Must use SGD (typically with Adam).
+</CollapsibleStep>
+
+---
+
+### Problem 8: Hessian eigenvalues and convergence
+
+> *Source: Bishop Ch. 7, Section 7.3, equations (7.27)-(7.30). Also Lecture 12 slides, slides 17-21.*
+
+<Callout variant="note" title="Problem">
+Suppose the Hessian of a loss function at its minimum has eigenvalues $\lambda_1 = 2$ and $\lambda_2 = 200$.
+
+**(a)** What is the maximum learning rate $\eta$ for which gradient descent converges?
+
+**(b)** Using this maximum $\eta$, what is the convergence factor $(1 - \eta\lambda_i)$ along each eigendirection?
+
+**(c)** What is the condition number? What does it tell you about convergence speed?
+
+**(d)** After 100 iterations with $\eta = 0.009$, by what factor has the distance to the minimum decreased along the $\lambda_1$ direction? Along the $\lambda_2$ direction?
+</Callout>
+
+<CollapsibleStep title="Solution" variant="example">
+
+**(a)** $\eta < 2 / \lambda_{\max} = 2/200 = 0.01$.
+
+**(b)** With $\eta = 0.01$: along $\lambda_1 = 2$, the factor is $|1 - 0.01 \cdot 2| = 0.98$ (very slow decay). Along $\lambda_2 = 200$, the factor is $|1 - 0.01 \cdot 200| = 1$ (right at the boundary — will oscillate without converging). So in practice you'd use a slightly smaller $\eta$.
+
+**(c)** Condition number $= \lambda_{\max}/\lambda_{\min} = 200/2 = 100$. This means the error surface is 100 times more curved in one direction than the other. Convergence in the flat direction ($\lambda_1$) is very slow, while the learning rate is constrained by the steep direction ($\lambda_2$).
+
+**(d)** With $\eta = 0.009$: factor along $\lambda_1$ is $(1 - 0.009 \cdot 2)^{100} = (0.982)^{100} \approx 0.163$ (reduced by ~84%). Factor along $\lambda_2$ is $(1 - 0.009 \cdot 200)^{100} = (-0.8)^{100} = 0.8^{100} \approx 2.0 \times 10^{-10}$ (essentially zero — converged fully, though it oscillated along the way since the base is negative).
+</CollapsibleStep>
+
+---
+
+## Quick Reference
+
+| Formula | Expression |
+|---------|------------|
+| Squared loss | $J(w) = \sum_i (w^\top x^{(i)} - y^{(i)})^2$ |
+| Gradient | $\nabla J = \sum_i 2(w^\top x^{(i)} - y^{(i)})\,x^{(i)}$ |
+| SGD gradient (point $i$) | $\hat{g}_i = 2(w^\top x^{(i)} - y^{(i)})\,x^{(i)}$ |
+| GD update | $w^{(\tau)} = w^{(\tau-1)} - \eta\,\nabla J(w^{(\tau-1)})$ |
+| OLS closed form | $\hat{w} = (X^\top X)^{-1}X^\top y$ |
+| Ridge closed form | $\hat{w} = (X^\top X + \lambda I)^{-1}X^\top y$ |
+| Convergence condition | $\lvert 1 - \eta\lambda_i \rvert < 1$ for all eigenvalues |
+| Max learning rate | $\eta < 2/\lambda_{\max}$ |
+| Momentum update | $\Delta w = -\eta\,\nabla E + \mu\,\Delta w_{\text{prev}}$ |
+| Momentum eff. LR (flat) | $\eta/(1-\mu)$ |
+| Momentum eff. LR (oscillating) | $\eta/(1+\mu)$ |
+| Batch GD cost | $O(nd)$ per step |
+| Mini-batch SGD cost | $O(Bd)$ per step |
+| Gradient steps per epoch | $n/B$ |
+
+*Sources: Lecture 13 transcript, Lecture 12 slides, Bishop & Bishop Deep Learning Ch. 7, SP26 midterm solutions, handwritten lecture notes.*

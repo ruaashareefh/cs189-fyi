@@ -1,0 +1,260 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* KaTeX */
+@import 'katex/dist/katex.min.css';
+
+/* ── Design tokens ─────────────────────────────────── */
+
+:root {
+  --bg:          #f7f6f2;
+  --bg-card:     #eeeae2;
+  --bg-elevated: #e5e1d8;
+  --border:      #d4d0c8;
+  --border-2:    #c4c0b8;
+
+  --text:        #1a1824;
+  --text-2:      #4a4860;
+  --text-3:      #8a889a;
+
+  --accent:      #5548b0;
+  --accent-dim:  #7b6fbe;
+  --accent-glow: rgba(85, 72, 176, 0.10);
+  --accent-ghost:rgba(85, 72, 176, 0.06);
+
+  --green:  #2d7a56;
+  --amber:  #b08020;
+  --rose:   #c0392b;
+  --sky:    #2878a0;
+
+  --font-sans:  var(--font-dm-sans);
+  --font-serif: var(--font-lora);
+  --font-mono:  var(--font-ibm-mono);
+
+  --radius: 6px;
+  --radius-lg: 12px;
+}
+
+/* ── Base ──────────────────────────────────────────── */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  line-height: 1.65;
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(85, 72, 176, 0.15);
+  color: var(--text);
+}
+
+/* ── Scrollbar ─────────────────────────────────────── */
+
+::-webkit-scrollbar        { width: 6px; height: 6px; }
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--border-2); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ── Typography defaults ──────────────────────────── */
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-serif), Georgia, serif;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+
+p { color: var(--text); }
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+  transition: opacity 0.15s;
+}
+a:hover { opacity: 0.75; }
+
+code, kbd, pre, samp {
+  font-family: var(--font-mono), ui-monospace, monospace;
+}
+
+/* ── Prose (lecture / topic body text) ───────────── */
+
+.prose {
+  max-width: 72ch;
+  font-size: 1.0625rem;
+  line-height: 1.8;
+  color: var(--text-2);
+}
+
+.prose > * + * { margin-top: 1.4em; }
+
+.prose h1, .prose h2, .prose h3 {
+  color: var(--text);
+  margin-top: 2em;
+  margin-bottom: 0.6em;
+}
+
+.prose h2 { font-size: 1.5rem; }
+.prose h3 { font-size: 1.2rem; }
+
+.prose strong { color: var(--text); font-weight: 600; }
+
+.prose em { color: var(--text-2); font-style: italic; }
+
+.prose ul, .prose ol {
+  padding-left: 1.4em;
+}
+.prose li { margin-bottom: 0.3em; }
+.prose li::marker { color: var(--accent-dim); }
+
+.prose code {
+  font-size: 0.875em;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  color: var(--accent);
+}
+
+.prose pre {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2em 1.4em;
+  overflow-x: auto;
+  font-size: 0.875rem;
+}
+
+.prose pre code {
+  background: transparent;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+.prose blockquote {
+  border-left: 2px solid var(--accent);
+  padding-left: 1em;
+  color: var(--text-2);
+  font-style: italic;
+}
+
+.prose hr {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 2em 0;
+}
+
+.prose table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.prose th {
+  border-bottom: 1px solid var(--border-2);
+  padding: 0.6em 1em;
+  text-align: left;
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-2);
+  font-weight: 600;
+}
+
+.prose td {
+  border-bottom: 1px solid var(--border);
+  padding: 0.6em 1em;
+  color: var(--text-2);
+}
+
+.prose tr:last-child td { border-bottom: none; }
+
+/* ── KaTeX overrides ──────────────────────────────── */
+
+.katex { font-size: 1.05em; }
+
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.5em 0;
+}
+
+.math-block {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.2em 1.6em;
+  margin: 1.4em 0;
+  overflow-x: auto;
+  text-align: center;
+}
+
+/* ── React Flow overrides ─────────────────────────── */
+
+.react-flow__background { background: var(--bg) !important; }
+.react-flow__minimap { background: var(--bg-card) !important; border: 1px solid var(--border) !important; border-radius: var(--radius) !important; }
+.react-flow__minimap-node { fill: var(--bg-elevated) !important; }
+.react-flow__controls { background: var(--bg-card) !important; border: 1px solid var(--border) !important; border-radius: var(--radius) !important; }
+.react-flow__controls-button { background: var(--bg-card) !important; border-color: var(--border) !important; color: var(--text-2) !important; fill: var(--text-2) !important; }
+.react-flow__controls-button:hover { background: var(--bg-elevated) !important; }
+.react-flow__edge-path { stroke: var(--border-2) !important; }
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path { stroke: var(--accent-dim) !important; }
+
+/* ── Syntax highlighting (rehype-pretty-code) ─────── */
+
+[data-rehype-pretty-code-figure] pre {
+  background: var(--bg-card) !important;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+[data-line] { padding: 0 1.4em; }
+
+[data-highlighted-line] {
+  background: var(--accent-ghost);
+  border-left: 2px solid var(--accent-dim);
+  padding-left: calc(1.4em - 2px);
+}
+
+[data-rehype-pretty-code-title] {
+  font-family: var(--font-mono), monospace;
+  font-size: 0.75rem;
+  color: var(--text-2);
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: var(--radius) var(--radius) 0 0;
+  padding: 0.5em 1em;
+}
+
+/* ── Utility classes ──────────────────────────────── */
+
+.mono  { font-family: var(--font-mono), monospace; }
+.serif { font-family: var(--font-serif), Georgia, serif; }
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--text) 40%, var(--accent-dim));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}

@@ -1,0 +1,737 @@
+---
+lecture: 18
+title: "Backpropagation: Computing Gradients Efficiently in Neural Networks"
+description: "Backprop is just gradient computation via dynamic programming on a computation graph. Bar notation, single- and multi-child rules, MLP worked example, and why finite differences fail."
+tags:
+  - { label: "Backpropagation", type: "proof" }
+  - { label: "Computation Graphs", type: "concept" }
+  - { label: "Chain Rule", type: "math" }
+  - { label: "Autodiff", type: "code" }
+readTime: 60
+status: published
+date: "2025-03-17"
+prereqs:
+  - "17-neural-networks"
+---
+
+<Callout variant="note" title="Contents">
+  1. The Training Setup
+  2. Computation Graphs
+  3. How You Would Do It Without Backprop
+  4. The Backward Pass Idea
+  5. Bar Notation: The "Error Signal"
+  6. The Backpropagation Algorithm (Single-Child)
+  7. Multi-Child Graphs and the Multivariate Chain Rule
+  8. Multilayer Perceptron: Full Worked Example
+  9. Vector Form: What You Actually Implement
+  10. Backprop as Message Passing
+  11. Computational Cost
+  12. Why Not Finite Differences or Symbolic Algebra?
+  13. Activation Functions and Dead Units
+  14. Summary and Retrieval Practice
+</Callout>
+
+<Callout variant="key">
+  Punchline: backprop is just gradient computation via dynamic programming on a graph.
+</Callout>
+
+---
+
+## 1. The Training Setup (Same as Always)
+
+Neural networks fit into the same framework you have used all semester. The only thing that changed is the model class.
+
+| Component | What it is |
+|---|---|
+| Training data | $\mathcal{S} = \{(\mathbf{x}_i, y_i)\}_{i=1}^N$ |
+| Model class | A neural network: $f(\mathbf{x}\|\mathbf{w})$, which is a *composition of functions* |
+| Loss function | Log likelihood: $LL(\mathbf{w}) = \sum_i \log p(y_i\|\mathbf{x}_i, \mathbf{w})$ |
+| Learning objective | $\hat{\mathbf{w}} = \arg\min_\mathbf{w} \{-LL(\mathbf{w})\}$ |
+| Optimization | Gradient descent (SGD, Adam, etc.) — all require the gradient |
+
+Maximizing log likelihood = minimizing negative log likelihood = minimizing cross entropy. These are identical. You've seen all three phrasings; don't be confused by them.
+
+### The Deep Net as Nested Function Composition
+
+Recall: a deep neural network with $L$ layers is:
+
+$$\mathbf{z}^{(l)} = h^{(l)}\!\left(W^{(l)}\mathbf{z}^{(l-1)}\right), \quad l = 1, \dots, L$$
+
+$$\mathbf{z}^{(0)} = \mathbf{x}, \qquad \mathbf{z}^{(L)} = \mathbf{y}$$
+
+Every layer takes the activations from the previous layer, multiplies by a weight matrix, and passes through an activation function. The full network is:
+
+$$\mathbf{y} = h_L\!\left(W^{(L)} \cdots h_2\!\left(W^{(2)} h_1\!\left(W^{(1)}\mathbf{x}\right)\right)\right)$$
+
+This nesting of functions is exactly why taking the gradient looks scary at first, and why we need a clever algorithm to compute it without drowning in repeated computation.
+
+<Callout variant="definition" title="The Key Insight Upfront">
+  Backpropagation is not a new mathematical concept. It is just the chain rule of calculus, applied in a specific order that lets you reuse intermediate results. The order you choose turns out to make the gradient computation linear in the number of parameters instead of quadratic.
+</Callout>
+
+---
+
+## 2. Computation Graphs
+
+Before deriving backprop, you need one piece of machinery: the computation graph. It is just a diagram that shows which quantities depend on which other quantities.
+
+### The Running Example
+
+We will use the simplest possible case throughout: one input, one weight, one bias, one activation, squared loss. Everything is a scalar.
+
+<div className="rounded-lg p-4 border my-5" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+  <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">The network equations</p>
+
+  $z = wx + b$ — pre-activation: linear combination of inputs
+
+  $y = \sigma(z)$ — activation: pass through nonlinearity
+
+  $\mathcal{L} = \tfrac{1}{2}(y - t)^2$ — squared loss: prediction vs. label $t$
+</div>
+
+The **computation graph** makes the dependency structure explicit. Nodes are quantities (data, parameters, or computed values). Edges point from parents to children (i.e., $A \to B$ means $B$ is a function of $A$).
+
+<div className="my-5 rounded-lg p-4 border flex flex-col items-center" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+  <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-4">Computation graph for the simple example</p>
+  <svg viewBox="0 0 600 140" style={{ width: '100%', maxWidth: '580px' }}>
+    <defs>
+      <marker id="arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+        <path d="M0,0 L0,6 L6,3 z" fill="#7a6f5e"/>
+      </marker>
+    </defs>
+    <ellipse cx="60" cy="70" rx="28" ry="18" fill="#dce9f4" stroke="#2c5f8a" strokeWidth="1.8"/>
+    <text x="60" y="74" textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontSize="13" fill="#2c5f8a">x</text>
+    <ellipse cx="140" cy="40" rx="28" ry="18" fill="#d9ede3" stroke="#2e6b4f" strokeWidth="1.8"/>
+    <text x="140" y="44" textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontSize="13" fill="#2e6b4f">w</text>
+    <ellipse cx="140" cy="100" rx="28" ry="18" fill="#d9ede3" stroke="#2e6b4f" strokeWidth="1.8"/>
+    <text x="140" y="104" textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontSize="13" fill="#2e6b4f">b</text>
+    <ellipse cx="280" cy="70" rx="28" ry="18" fill="#fff8d9" stroke="#c49a00" strokeWidth="1.8"/>
+    <text x="280" y="74" textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontSize="13" fill="#8a6a00">z</text>
+    <ellipse cx="400" cy="70" rx="28" ry="18" fill="#fff8d9" stroke="#c49a00" strokeWidth="1.8"/>
+    <text x="400" y="74" textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontSize="13" fill="#8a6a00">y</text>
+    <ellipse cx="510" cy="40" rx="28" ry="18" fill="#dce9f4" stroke="#2c5f8a" strokeWidth="1.8"/>
+    <text x="510" y="44" textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontSize="13" fill="#2c5f8a">t</text>
+    <ellipse cx="550" cy="70" rx="38" ry="18" fill="#f4dcdc" stroke="#8b2020" strokeWidth="1.8"/>
+    <text x="550" y="74" textAnchor="middle" fontFamily="JetBrains Mono, monospace" fontSize="13" fill="#8b2020">L</text>
+    <line x1="88" y1="70" x2="252" y2="70" stroke="#7a6f5e" strokeWidth="1.3" markerEnd="url(#arr)"/>
+    <line x1="166" y1="48" x2="255" y2="64" stroke="#7a6f5e" strokeWidth="1.3" markerEnd="url(#arr)"/>
+    <line x1="166" y1="93" x2="255" y2="77" stroke="#7a6f5e" strokeWidth="1.3" markerEnd="url(#arr)"/>
+    <line x1="308" y1="70" x2="372" y2="70" stroke="#7a6f5e" strokeWidth="1.3" markerEnd="url(#arr)"/>
+    <line x1="428" y1="70" x2="512" y2="70" stroke="#7a6f5e" strokeWidth="1.3" markerEnd="url(#arr)"/>
+    <line x1="528" y1="48" x2="535" y2="58" stroke="#7a6f5e" strokeWidth="1.3" markerEnd="url(#arr)"/>
+    <circle cx="30" cy="120" r="5" fill="#d9ede3" stroke="#2e6b4f" strokeWidth="1.5"/>
+    <text x="40" y="124" fontFamily="sans-serif" fontSize="11" fill="#7a6f5e">parameters (green)</text>
+    <circle cx="155" cy="120" r="5" fill="#dce9f4" stroke="#2c5f8a" strokeWidth="1.5"/>
+    <text x="165" y="124" fontFamily="sans-serif" fontSize="11" fill="#7a6f5e">data (blue, no gradient needed)</text>
+    <circle cx="340" cy="120" r="5" fill="#fff8d9" stroke="#c49a00" strokeWidth="1.5"/>
+    <text x="350" y="124" fontFamily="sans-serif" fontSize="11" fill="#7a6f5e">computed values</text>
+  </svg>
+</div>
+
+Key things to notice about this graph:
+
+- $x$ and $t$ are data. We never take derivatives with respect to them.
+- $w$ and $b$ are parameters. We *must* compute $\partial\mathcal{L}/\partial w$ and $\partial\mathcal{L}/\partial b$ to do gradient descent.
+- $z$ and $y$ are intermediate computed values. We will need their gradients as stepping stones.
+- Every node in this example has exactly **one child** (one node it feeds into). $w$ feeds only into $z$, $z$ feeds only into $y$, etc. This "single-child" structure simplifies the algorithm; we will break it later with the L2 regularization example.
+
+<Callout variant="note" title="Terminology Check">
+  **Forward pass**: execute the computation graph left to right, computing $z$, then $y$, then $\mathcal{L}$. This is inference plus loss computation.
+
+  **Backward pass**: traverse the computation graph right to left, computing derivatives. This is backpropagation.
+</Callout>
+
+---
+
+## 3. How You Would Do It Without Backprop
+
+First, let's be explicit about the "dumb" approach: just plug everything in and differentiate directly, like first-year calculus.
+
+### Substituting Everything into the Loss
+
+$$\mathcal{L} = \tfrac{1}{2}(\sigma(wx + b) - t)^2$$
+
+Now differentiate with respect to $w$, applying the chain rule twice:
+
+<CollapsibleStep title="Naive approach: computing dL/dw directly" variant="derivation" defaultOpen>
+
+1. $\dfrac{\partial\mathcal{L}}{\partial w} = \dfrac{\partial}{\partial w}\left[\dfrac{1}{2}(\sigma(wx+b) - t)^2\right]$
+
+2. $= \dfrac{1}{2} \cdot 2(\sigma(wx+b) - t) \cdot \dfrac{\partial}{\partial w}(\sigma(wx+b) - t)$ — power rule drops the 2, cancels the half
+
+3. $= (\sigma(wx+b) - t) \cdot \sigma'(wx+b) \cdot \dfrac{\partial}{\partial w}(wx+b)$ — chain rule through the sigmoid
+
+4. $= (\sigma(wx+b) - t) \cdot \sigma'(wx+b) \cdot x$
+
+</CollapsibleStep>
+
+And for $b$:
+
+$$\frac{\partial\mathcal{L}}{\partial b} = (\sigma(wx+b) - t) \cdot \sigma'(wx+b)$$
+
+This works. You could code this up and run gradient descent. But notice the problem: to compute both gradients, you're computing the **same expressions multiple times**:
+
+- $(\sigma(wx+b) - t)$ appears in both $\partial\mathcal{L}/\partial w$ and $\partial\mathcal{L}/\partial b$
+- $\sigma'(wx+b)$ appears in both
+
+In a simple two-parameter network this is no big deal. But in a network with millions of parameters across many layers, this repeated computation becomes catastrophically expensive. Backprop's entire job is to avoid this by computing each expression exactly once and caching it.
+
+<Callout variant="intuition">
+  Think of it like dynamic programming. Naive recursion recomputes the same subproblems over and over. Memoizing (caching) each subproblem's answer the first time you compute it makes everything fast. Backprop is the same idea applied to gradient computation.
+</Callout>
+
+---
+
+## 4. The Backward Pass Idea
+
+Instead of substituting everything in and differentiating the big expression, work *backwards from the loss*, computing one derivative at a time and reusing what you already computed.
+
+### Step by Step, Starting from the Loss
+
+The computation graph is $w, x, b \to z \to y \to \mathcal{L}$. We go right to left.
+
+<div className="grid grid-cols-2 gap-4 my-5">
+  <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+    <div className="px-4 py-2.5 font-mono text-xs uppercase tracking-widest text-white" style={{ background: '#2c5f8a' }}>Forward pass (left to right)</div>
+    <div className="px-4 py-3 space-y-2" style={{ background: 'var(--bg-card)' }}>
+      <p className="font-mono text-sm">$z = wx + b$</p>
+      <p className="font-mono text-sm">$y = \sigma(z)$</p>
+      <p className="font-mono text-sm">$\mathcal{L} = \tfrac{1}{2}(y-t)^2$</p>
+    </div>
+  </div>
+  <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+    <div className="px-4 py-2.5 font-mono text-xs uppercase tracking-widest text-white" style={{ background: '#8b2020' }}>Backward pass (right to left)</div>
+    <div className="px-4 py-3 space-y-2" style={{ background: 'var(--bg-card)' }}>
+      <p className="font-mono text-sm">$\dfrac{d\mathcal{L}}{dy} = y - t$</p>
+      <p className="font-mono text-sm">$\dfrac{d\mathcal{L}}{dz} = \left(\dfrac{d\mathcal{L}}{dy}\right)\cdot\sigma'(z)$ <span className="text-green-600 font-semibold">↩ reuses step 1</span></p>
+      <p className="font-mono text-sm">$\dfrac{\partial\mathcal{L}}{\partial w} = \dfrac{d\mathcal{L}}{dz}\cdot x$ <span className="text-green-600 font-semibold">↩ reuses step 2</span></p>
+      <p className="font-mono text-sm">$\dfrac{\partial\mathcal{L}}{\partial b} = \dfrac{d\mathcal{L}}{dz}$ <span className="text-green-600 font-semibold">↩ reuses step 2</span></p>
+    </div>
+  </div>
+</div>
+
+The pattern: to compute the derivative of the loss with respect to any variable, you need the derivative of the loss with respect to that variable's **child** in the graph, times the local derivative of the child with respect to that variable. Each intermediate derivative is computed once and reused by everything that comes before it in the graph.
+
+<Callout variant="definition" title="The Structural Observation">
+  Look at the backward pass. Every entry is built from something already computed one step earlier. $d\mathcal{L}/dz$ uses $d\mathcal{L}/dy$. $\partial\mathcal{L}/\partial w$ uses $d\mathcal{L}/dz$. $\partial\mathcal{L}/\partial b$ also uses $d\mathcal{L}/dz$. This cascading reuse is the entire trick, and it generalizes to any computation graph with any depth.
+</Callout>
+
+<CollapsibleStep title="Try it yourself: what is dL/dz for the sigmoid activation?" variant="detail">
+
+**Question:** Given $\mathcal{L} = \tfrac{1}{2}(y-t)^2$ and $y = \sigma(z)$, derive $d\mathcal{L}/dz$ using the backward order. What does it depend on that was already computed?
+
+**Answer:** Starting from $d\mathcal{L}/dy = y - t$, apply the chain rule:
+
+$$\frac{d\mathcal{L}}{dz} = \frac{d\mathcal{L}}{dy} \cdot \frac{dy}{dz} = (y - t) \cdot \sigma'(z)$$
+
+It depends on $d\mathcal{L}/dy$, which was already computed in the previous backward step. This is the reuse. In code, you don't recompute $(y-t)$; you look it up from cache.
+
+</CollapsibleStep>
+
+---
+
+## 5. Bar Notation: The "Error Signal"
+
+Writing $d\mathcal{L}/dy$ everywhere gets tedious. We introduce shorthand: a bar over a variable means "the derivative of the loss with respect to that variable."
+
+$$\bar{v} \;\doteq\; \frac{\partial\mathcal{L}}{\partial v}$$
+
+Also called the **error signal** for node $v$. It tells you how sensitive the loss is to small changes in $v$.
+
+With bar notation, the backward pass for our simple example becomes very clean:
+
+$$\bar{y} = y - t \qquad \bar{z} = \bar{y} \cdot \sigma'(z) \qquad \bar{w} = \bar{z} \cdot x \qquad \bar{b} = \bar{z}$$
+
+Each barred quantity is what gradient descent actually needs. $\bar{w}$ is the gradient of the loss with respect to $w$, which is what we subtract to update $w$. $\bar{b}$ is the gradient with respect to $b$.
+
+<Callout variant="warning" title="Exam Tip">
+  The bar notation is specific to this class's slides (adapted from Roger Grosse's notes). The Bishop textbook uses $\delta$ for the same concept. Either way, it means $\partial\mathcal{L}/\partial v$. Don't let notation differences in problems confuse you; check the definition.
+</Callout>
+
+---
+
+## 6. The Backpropagation Algorithm (Single-Child Graphs)
+
+Now we can write down the algorithm in full generality for the simple case where every node in the computation graph has at most one child.
+
+### Setup: Topological Ordering
+
+Assign a topological ordering $v_1, \dots, v_N$ to all non-data nodes in the graph, where parents come before children. For our example:
+
+$$v_1 = b,\quad v_2 = w,\quad v_3 = z,\quad v_4 = y,\quad v_5 = \mathcal{L}$$
+
+$v_N = \mathcal{L}$ is always last (it is the thing we want to differentiate). Data nodes ($x$, $t$) are not included because we never differentiate with respect to them.
+
+### The Algorithm
+
+<CollapsibleStep title="Backpropagation for single-child graphs" variant="proof" defaultOpen>
+
+**Forward pass**: for $i = 1, \dots, N$, compute $v_i$ as a function of its parents $\text{Pa}(v_i)$.
+
+**Backward pass**:
+
+1. **Base case:** $\overline{v_N} = \dfrac{\partial\mathcal{L}}{\partial\mathcal{L}} = 1$
+
+2. **For** $i = N-1, \dots, 1$: compute
+
+$$\overline{v_i} \;\doteq\; \frac{\partial\mathcal{L}}{\partial v_i} = \overline{v_{\text{child}(i)}} \cdot \frac{\partial v_{\text{child}(i)}}{\partial v_i}$$
+
+where $v_{\text{child}(i)}$ is the unique child of $v_i$ in the graph.
+
+</CollapsibleStep>
+
+Applying this to our example in the correct order:
+
+$$\overline{v_5} = 1 \qquad \overline{v_4} = \overline{v_5}\,\frac{\partial v_5}{\partial v_4} = 1\cdot(y-t) \qquad \overline{v_3} = \overline{v_4}\,\frac{\partial v_4}{\partial v_3} = \bar{y}\,\sigma'(z)$$
+
+$$\overline{v_2} = \overline{v_3}\,\frac{\partial v_3}{\partial v_2} = \bar{z}\cdot x \qquad \overline{v_1} = \overline{v_3}\,\frac{\partial v_3}{\partial v_1} = \bar{z}\cdot 1 = \bar{z}$$
+
+Notice: $\overline{v_3} = \bar{z}$ is used to compute both $\overline{v_2} = \bar{w}$ and $\overline{v_1} = \bar{b}$. It was computed once and reused twice. This is the dynamic programming payoff.
+
+### Why Does the Forward Pass Matter?
+
+Two reasons. First, many of the backward pass expressions need values computed during the forward pass. $\bar{z} = \bar{y}\cdot\sigma'(z)$ requires the actual value of $z$. So you must store intermediate activations during the forward pass and retrieve them during the backward pass. Second, you need the actual loss value to track training progress.
+
+<CollapsibleStep title="Self-test: write out the full backprop algorithm from scratch" variant="detail">
+
+**Question:** Close this page. On a blank sheet, write: (1) the bar notation definition, (2) the base case, (3) the backward pass rule for a single-child graph, and (4) apply it to $z=wx+b$, $y=\sigma(z)$, $L=\tfrac{1}{2}(y-t)^2$. Check against the formulas above.
+
+**Answer:** You should get: $\bar{y} = y-t$, $\bar{z} = \bar{y}\sigma'(z)$, $\bar{w} = \bar{z}x$, $\bar{b} = \bar{z}$. If you got those four, you understand the algorithm. If you got stuck, identify exactly which step tripped you up and work through it again.
+
+</CollapsibleStep>
+
+---
+
+## 7. Multi-Child Graphs and the Multivariate Chain Rule
+
+The single-child algorithm breaks as soon as a node has more than one child. This comes up constantly in real networks: weight matrices feed into multiple nodes, regularization terms use the same weights, and hidden units feed into multiple output nodes.
+
+### A Concrete Case: L2 Regularization
+
+Add a ridge penalty to the loss:
+
+<div className="rounded-lg p-4 border my-5" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+  <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">L2-regularized regression</p>
+
+  $z = wx + b$
+
+  $y = \sigma(z)$
+
+  $\mathcal{L} = \tfrac{1}{2}(y-t)^2$
+
+  $\mathcal{R} = \tfrac{1}{2}w^2$ — regularization penalty, applied to weights only, not bias
+
+  $\mathcal{L}_{\text{reg}} = \mathcal{L} + \lambda\mathcal{R}$ — total loss we minimize
+</div>
+
+Now $w$ appears in two places: in $z$ (as usual) and in $\mathcal{R}$. So $w$ has **two children** in the computation graph: $z$ and $\mathcal{R}$. The single-child rule cannot handle this.
+
+### The Fix: Multivariate Chain Rule
+
+If $f$ depends on $t$ through multiple paths (through $x(t)$ and through $y(t)$), the total derivative is the sum over all paths:
+
+$$\frac{d}{dt}f(x(t), y(t)) = \frac{\partial f}{\partial x}\frac{dx}{dt} + \frac{\partial f}{\partial y}\frac{dy}{dt}$$
+
+Generalizes to any number of intermediate variables: sum one term per path.
+
+In bar notation, this gives the **general backward pass rule**:
+
+$$\overline{v_i} = \sum_{j \in \text{Ch}(v_i)} \overline{v_j} \cdot \frac{\partial v_j}{\partial v_i}$$
+
+$\text{Ch}(v_i)$ = all children of node $v_i$. Sum one term per child. Single-child case: just one term in the sum.
+
+<Callout variant="intuition">
+  Think of it as information flow. The error signal at $v_i$ is the total amount of "blame" it receives for the loss. If $v_i$ influences the loss through two paths (e.g., through $z$ and through $\mathcal{R}$), then its total blame is the blame coming back from each path, added up. The multivariate chain rule is just accounting for all the paths.
+</Callout>
+
+### Worked Example: L2-Regularized Backward Pass
+
+<CollapsibleStep title="Backward pass for L2-regularized regression" variant="derivation" defaultOpen>
+
+Rule: $\overline{v_i} = \sum_{j \in \text{Ch}(v_i)} \overline{v_j} \cdot \partial v_j/\partial v_i$. Start at the loss and work backwards.
+
+1. $\overline{\mathcal{L}_{\text{reg}}} = 1$ — base case, always 1
+
+2. $\overline{\mathcal{R}} = \overline{\mathcal{L}_{\text{reg}}} \cdot \dfrac{d\mathcal{L}_{\text{reg}}}{d\mathcal{R}} = \overline{\mathcal{L}_{\text{reg}}} \cdot \lambda$ — ($\mathcal{R}$ has one child: $\mathcal{L}_{\text{reg}}$)
+
+3. $\overline{\mathcal{L}} = \overline{\mathcal{L}_{\text{reg}}} \cdot \dfrac{d\mathcal{L}_{\text{reg}}}{d\mathcal{L}} = \overline{\mathcal{L}_{\text{reg}}} \cdot 1 = \overline{\mathcal{L}_{\text{reg}}}$ — ($\mathcal{L}$ has one child: $\mathcal{L}_{\text{reg}}$)
+
+4. $\bar{y} = \overline{\mathcal{L}} \cdot \dfrac{d\mathcal{L}}{dy} = \overline{\mathcal{L}} \cdot (y - t)$
+
+5. $\bar{z} = \bar{y} \cdot \dfrac{dy}{dz} = \bar{y}\cdot\sigma'(z)$
+
+6. $\bar{w} = \bar{z}\cdot\dfrac{\partial z}{\partial w} + \overline{\mathcal{R}}\cdot\dfrac{d\mathcal{R}}{dw} = \bar{z}\cdot x + \overline{\mathcal{R}}\cdot w$ — **TWO children: $z$ and $\mathcal{R}$. Sum both contributions.**
+
+7. $\bar{b} = \bar{z}\cdot\dfrac{\partial z}{\partial b} = \bar{z}\cdot 1 = \bar{z}$ — ($b$ has one child: $z$)
+
+</CollapsibleStep>
+
+Step 6 is the key step. Without the multivariate chain rule, you would only account for $\bar{z}\cdot x$ and miss the $\overline{\mathcal{R}}\cdot w$ term. That missing term is exactly the gradient of the regularization penalty, which is what pulls weights toward zero. Missing it would mean your L2 regularization does nothing.
+
+<CollapsibleStep title="Self-test: why does w get two terms in step 6?" variant="detail">
+
+**Question:** Explain in words why $\bar{w}$ has two terms. What does each term represent? What would happen if you only used the first term?
+
+**Answer:** $w$ appears in two places in the loss: inside $z = wx + b$ (which affects the prediction) and inside $\mathcal{R} = \tfrac{1}{2}w^2$ (the penalty). Each path from $w$ to $\mathcal{L}_{\text{reg}}$ contributes one term to $\bar{w}$.
+
+The first term $\bar{z}\cdot x$ captures how changing $w$ affects the prediction error. The second term $\overline{\mathcal{R}}\cdot w = \lambda w$ captures how changing $w$ affects the regularization penalty. This second term is what pushes the weights toward zero. Without it, gradient descent would ignore the regularization entirely.
+
+</CollapsibleStep>
+
+---
+
+## 8. Multilayer Perceptron: Full Worked Example
+
+Now let's do the real thing: a two-layer network with multiple inputs and outputs, without L2 regularization.
+
+### The Network
+
+<div className="grid grid-cols-2 gap-4 my-5">
+  <div className="rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">Forward pass (scalar form)</p>
+
+    $z_i = \sum_j w_{ij}^{(1)} x_j + b_i^{(1)}$
+
+    $h_i = \sigma(z_i)$
+
+    $y_k = \sum_i w_{ki}^{(2)} h_i + b_k^{(2)}$
+
+    $\mathcal{L} = \tfrac{1}{2}\sum_k (y_k - t_k)^2$
+  </div>
+  <div className="rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">Layers</p>
+    <p>Input: $\mathbf{x} \in \mathbb{R}^D$</p>
+    <p>Hidden: $\mathbf{h} \in \mathbb{R}^M$ (after ReLU/sigmoid)</p>
+    <p>Output: $\mathbf{y} \in \mathbb{R}^K$</p>
+    <p>Each hidden unit $h_i$ has **K children** (it feeds into every output $y_1, \dots, y_K$). Multi-child rule applies.</p>
+  </div>
+</div>
+
+### Full Backward Pass
+
+<CollapsibleStep title="Backward pass for the 2-layer MLP" variant="derivation" defaultOpen>
+
+1. $\overline{\mathcal{L}} = 1$
+
+2. $\bar{y}_k = \overline{\mathcal{L}} \cdot \dfrac{\partial\mathcal{L}}{\partial y_k} = \overline{\mathcal{L}} \cdot (y_k - t_k)$ — derivative of squared loss w.r.t. each output
+
+3. $\overline{w_{ki}^{(2)}} = \bar{y}_k \cdot \dfrac{\partial y_k}{\partial w_{ki}^{(2)}} = \bar{y}_k \cdot h_i$ — gradient of output layer weights
+
+4. $\overline{b_k^{(2)}} = \bar{y}_k \cdot \dfrac{\partial y_k}{\partial b_k^{(2)}} = \bar{y}_k$ — gradient of output layer biases
+
+5. $\bar{h}_i = \sum_k \bar{y}_k \cdot w_{ki}^{(2)}$ — **Multi-child: $h_i$ feeds into every $y_k$. Sum over all $k$.**
+
+6. $\bar{z}_i = \bar{h}_i \cdot \sigma'(z_i)$ — backprop through the activation function
+
+7. $\overline{w_{ij}^{(1)}} = \bar{z}_i \cdot x_j$ — gradient of hidden layer weights
+
+8. $\overline{b_i^{(1)}} = \bar{z}_i$ — gradient of hidden layer biases
+
+</CollapsibleStep>
+
+Step 5 is the pivotal step. Every hidden unit $h_i$ influences every output $y_1, \dots, y_K$. The multivariate chain rule says you add up the error signal coming back from each child. Intuitively: the hidden unit $h_i$ gets blamed proportionally to how much each output relied on it ($w_{ki}^{(2)}$) and how much each output was wrong ($\bar{y}_k$).
+
+<Callout variant="warning" title="Exam Tip">
+  The gradient of the hidden layer weights $\overline{w_{ij}^{(1)}} = \bar{z}_i \cdot x_j$ has a beautiful interpretation. It is the outer product of the error signal at the hidden layer with the input. The error signal $\bar{z}_i$ tells you which hidden units were most responsible for the loss; $x_j$ tells you which inputs those units listened to most. Their product tells you which connection should change by how much.
+</Callout>
+
+---
+
+## 9. Vector Form: What You Actually Implement
+
+The scalar expressions above are conceptually correct but impractical to implement one scalar at a time. In practice you stack everything into vectors and matrices, and the backward pass becomes matrix operations.
+
+<div className="grid grid-cols-2 gap-4 my-5">
+  <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+    <div className="px-4 py-2.5 font-mono text-xs uppercase tracking-widest text-white" style={{ background: '#2c5f8a' }}>Forward pass (vector form)</div>
+    <div className="px-4 py-3 space-y-2" style={{ background: 'var(--bg-card)' }}>
+      <p className="font-mono text-sm">$\mathbf{z} = W^{(1)}\mathbf{x} + \mathbf{b}^{(1)}$</p>
+      <p className="font-mono text-sm">$\mathbf{h} = \sigma(\mathbf{z})$ (elementwise)</p>
+      <p className="font-mono text-sm">$\mathbf{y} = W^{(2)}\mathbf{h} + \mathbf{b}^{(2)}$</p>
+      <p className="font-mono text-sm">$\mathcal{L} = \tfrac{1}{2}\|\mathbf{t} - \mathbf{y}\|^2$</p>
+    </div>
+  </div>
+  <div className="rounded-lg overflow-hidden border" style={{ borderColor: 'var(--border)' }}>
+    <div className="px-4 py-2.5 font-mono text-xs uppercase tracking-widest text-white" style={{ background: '#8b2020' }}>Backward pass (vector form)</div>
+    <div className="px-4 py-3 space-y-2" style={{ background: 'var(--bg-card)' }}>
+      <p className="font-mono text-sm">$\overline{\mathcal{L}} = 1$</p>
+      <p className="font-mono text-sm">$\bar{\mathbf{y}} = \overline{\mathcal{L}}\cdot(\mathbf{y} - \mathbf{t})$</p>
+      <p className="font-mono text-sm">$\overline{W^{(2)}} = \bar{\mathbf{y}}\mathbf{h}^\top$ (outer product)</p>
+      <p className="font-mono text-sm">$\overline{\mathbf{b}^{(2)}} = \bar{\mathbf{y}}$</p>
+      <p className="font-mono text-sm">$\bar{\mathbf{h}} = W^{(2)\top}\bar{\mathbf{y}}$ (transposed weights)</p>
+      <p className="font-mono text-sm">$\bar{\mathbf{z}} = \bar{\mathbf{h}} \odot \sigma'(\mathbf{z})$ (elementwise product)</p>
+      <p className="font-mono text-sm">$\overline{W^{(1)}} = \bar{\mathbf{z}}\mathbf{x}^\top$ (outer product)</p>
+      <p className="font-mono text-sm">$\overline{\mathbf{b}^{(1)}} = \bar{\mathbf{z}}$</p>
+    </div>
+  </div>
+</div>
+
+<Callout variant="definition" title="Pattern to Memorize">
+  The gradient of a weight matrix $W^{(l)}$ is always an outer product: $\overline{W^{(l)}} = \bar{\mathbf{z}}^{(l)} \cdot (\mathbf{z}^{(l-1)})^\top$ where $\bar{\mathbf{z}}^{(l)}$ is the error signal at the layer's output and $\mathbf{z}^{(l-1)}$ is the activation coming in from the layer below.
+
+  The backward signal through a weight matrix is always the **transposed** weight matrix times the forward error: $\bar{\mathbf{z}}^{(l-1)} = W^{(l)\top}\bar{\mathbf{z}}^{(l)}$ (before passing through the activation derivative).
+</Callout>
+
+<CollapsibleStep title="Self-test: reproduce the vector backward pass from scratch" variant="detail">
+
+**Question:** Close the backward pass column above. Given only the forward pass equations, derive each line of the backward pass. Pay special attention to: (1) where transposes come from, (2) which operations are outer products vs. matrix-vector products, (3) where elementwise products appear.
+
+**Answer:**
+
+The transpose $W^{(2)\top}$ in $\bar{\mathbf{h}} = W^{(2)\top}\bar{\mathbf{y}}$ comes from the multivariate chain rule applied to all the hidden units simultaneously. Each $\bar{h}_i = \sum_k \bar{y}_k w_{ki}^{(2)}$ in scalar form; stacking these into a vector gives $\bar{\mathbf{h}} = W^{(2)\top}\bar{\mathbf{y}}$.
+
+Outer products for weight gradients: $\overline{w_{ki}^{(2)}} = \bar{y}_k h_i$ in scalar form; stacking gives $\overline{W^{(2)}} = \bar{\mathbf{y}}\mathbf{h}^\top$.
+
+Elementwise product for activation: $\bar{z}_i = \bar{h}_i \sigma'(z_i)$ for each $i$, so $\bar{\mathbf{z}} = \bar{\mathbf{h}} \odot \sigma'(\mathbf{z})$.
+
+</CollapsibleStep>
+
+---
+
+## 10. Backprop as Message Passing (Modularity)
+
+There is a beautiful way to think about the general rule $\overline{v_i} = \sum_{j \in \text{Ch}(v_i)} \overline{v_j} \cdot \partial v_j / \partial v_i$: it is **local message passing on the computation graph**.
+
+<div className="grid grid-cols-2 gap-4 my-5">
+  <div className="rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">How each node operates</p>
+    <ol>
+      <li>Wait for error signals to arrive from all your children</li>
+      <li>Aggregate them (sum, weighted by local derivatives)</li>
+      <li>This gives your own error signal $\bar{v}_i$</li>
+      <li>Pass appropriately modified signals up to your parents</li>
+    </ol>
+  </div>
+  <div className="rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">What each node needs to know</p>
+    <p>Only: how to compute derivatives of its own output with respect to its own inputs. It does not need to know anything about the rest of the graph.</p>
+    <p>This is **modularity**. You can add new layer types, new loss functions, new activation functions, and backprop through them by just defining their local derivative. This is exactly how PyTorch's autograd works.</p>
+  </div>
+</div>
+
+<Callout variant="key">
+  Backprop = dynamic programming + chain rule + message passing on a computation graph. Each of these descriptions is true simultaneously.
+</Callout>
+
+---
+
+## 11. Computational Cost: Why This Matters Enormously
+
+### Cost of the Forward Pass
+
+Each weight $w_{ij}$ is used exactly once during the forward pass: when computing $z_i = \sum_j w_{ij} x_j$. So the forward pass touches each parameter exactly once. Cost: **one multiply per parameter**.
+
+### Cost of the Backward Pass
+
+Each weight $w_{ki}^{(2)}$ requires two operations in the backward pass:
+
+1. $\overline{w_{ki}^{(2)}} = \bar{y}_k h_i$ — computing the weight's own gradient
+2. $\bar{h}_i = \sum_k \bar{y}_k w_{ki}^{(2)}$ — using the weight to propagate the error signal backward
+
+So the backward pass costs roughly **two multiplies per parameter**. Total cost: backward pass ≈ 2x forward pass.
+
+$$\text{Cost of backward pass} \approx 2 \times \text{cost of forward pass}$$
+
+This linear scaling is what makes training neural networks with millions or billions of parameters feasible. Without it, training would be impossible.
+
+<Callout variant="warning" title="Exam Tip">
+  The cost argument is elegant and exam-relevant. For a layer with $D$ inputs and $M$ hidden nodes, the weight matrix has $DM$ entries. Forward pass: $O(DM)$. Backward pass: $O(DM)$. Total: still $O(DM)$, just with a constant factor of 3. Not $O(D^2M)$ or $O(DM^2)$. Linear.
+</Callout>
+
+---
+
+## 12. Why Not Finite Differences or Symbolic Algebra?
+
+Two alternatives to backprop that might seem reasonable. Both fail badly for large networks.
+
+### Option 1: Finite Differences (Numerical Differentiation)
+
+Approximate each partial derivative by perturbing the parameter slightly:
+
+$$\frac{\partial}{\partial w_i} E(\mathbf{w};\mathcal{D}) \approx \frac{E(\mathbf{w} + \epsilon\mathbf{I}_i;\mathcal{D}) - E(\mathbf{w} - \epsilon\mathbf{I}_i;\mathcal{D})}{2\epsilon}$$
+
+This requires two forward passes per parameter to estimate one partial derivative. For a $D$-dimensional parameter vector you need $2D$ forward passes total to compute the full gradient. Each forward pass on $N$ data points costs $O(ND)$. Total:
+
+<Callout variant="warning" title="Why Finite Differences Fails">
+  Total cost per gradient step: $O(ND^2)$. Quadratic in the number of parameters. For real networks with $N \approx 1000$ and $D \gg 10^6$, this gives $ND^2 \gg 10^{15}$ operations per step. Completely intractable. Backprop costs $O(ND)$ for the same gradient.
+</Callout>
+
+Finite differences *is* useful as a debugging tool: you can check your backprop implementation by comparing its gradients against finite-difference estimates on a tiny network. This is called "gradient checking." But you would never train with it.
+
+### Option 2: Symbolic Algebra (e.g., SymPy)
+
+Have a computer algebra system differentiate the loss symbolically, producing an expression for the gradient. Advantages: automatic, exact (no epsilon approximation). Disadvantages:
+
+<Callout variant="warning" title="Why Symbolic Differentiation Fails">
+  The symbolic derivative of a deeply nested function can be **exponentially larger** than the original expression, containing many repeated subexpressions. Computing it would be far more expensive than backprop. Backprop avoids this by evaluating derivatives numerically during a single backward pass rather than constructing the symbolic expression.
+</Callout>
+
+### The Modern Solution: Automatic Differentiation
+
+Auto-differentiation (as implemented in PyTorch, JAX, TensorFlow) is essentially backpropagation done automatically. It builds the computation graph dynamically as your forward pass runs, then traverses it backward when you call `loss.backward()`. You get exact gradients (not finite-difference approximations) with the same asymptotic cost as backprop.
+
+| Method | Cost per gradient | Exact? | Scalable? |
+|---|---|---|---|
+| Finite differences | $O(ND^2)$ — quadratic | No (approx.) | No |
+| Symbolic differentiation | Exponential expression growth | Yes | No |
+| Backpropagation / autodiff | $O(ND)$ — linear | Yes | Yes |
+
+---
+
+## 13. Activation Functions and Dead Units
+
+Now that you understand backprop, you can see more precisely why the choice of activation function matters so much for training. The issue is what happens to the error signal as it flows backward through an activation.
+
+### The Dead Unit Problem with Sigmoid and Tanh
+
+Recall: $\bar{z}_i = \bar{h}_i \cdot \sigma'(z_i)$. The backward pass multiplies the error signal by the activation's derivative. If that derivative is near zero, the error signal is killed.
+
+<Callout variant="warning" title="What 'Dead Units' Means">
+  The sigmoid and tanh both saturate: for large positive or large negative inputs, the function is nearly flat ($\sigma'(z) \approx 0$). When a neuron saturates, the error signal $\bar{z}_i = \bar{h}_i \cdot \sigma'(z_i) \approx 0$. This means the weights feeding into that neuron receive essentially zero gradient. They stop learning. The unit is "dead."
+</Callout>
+
+In a deep network this is catastrophic. Saturated neurons in early layers cut off the gradient signal to all earlier layers. The whole network before a saturated layer stops learning. This, not some abstract philosophical issue, is why sigmoid activations don't work well in deep networks.
+
+### How ReLU Helps (and Its Own Problem)
+
+<div className="grid grid-cols-2 gap-4 my-5">
+  <div className="rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">ReLU: max(0, z)</p>
+    <p>$\sigma'(z) = 1$ when $z > 0$: error signal passes through unchanged. No saturation for active neurons.</p>
+    <p className="mt-2">$\sigma'(z) = 0$ when $z < 0$: error signal is killed. Neurons with negative pre-activations are still dead, but only half the time instead of whenever $|z|$ is large.</p>
+  </div>
+  <div className="rounded-lg p-4 border" style={{ background: 'var(--bg-card)', borderColor: 'var(--border)' }}>
+    <p className="font-mono text-xs uppercase tracking-widest text-ink-3 mb-3">Fixes for ReLU dead units</p>
+    <ul>
+      <li>**Leaky ReLU**: small slope $\alpha$ for $z < 0$, so gradient never fully zero</li>
+      <li>**Smaller learning rate**: prevents pre-activations from getting driven very negative during training</li>
+      <li>**Batch normalization**: keeps activations well-scaled, reduces risk of permanent death</li>
+      <li>**Careful initialization**: start weights so most neurons begin in the active region</li>
+    </ul>
+  </div>
+</div>
+
+<Callout variant="warning" title="Exam Tip">
+  When asked why sigmoid fails in deep networks, the correct answer is: **vanishing gradients due to saturating activations**. The derivative $\sigma'(z) \to 0$ as $|z| \to \infty$, so error signals are killed as they propagate backward through saturated neurons. ReLU avoids this for $z > 0$ because $\text{ReLU}'(z) = 1$ there.
+</Callout>
+
+### Three Views of the Gradient
+
+Backprop gives you three complementary ways to think about the gradient simultaneously:
+
+| View | Description |
+|---|---|
+| **Geometric** | The gradient is a vector in weight space pointing in the direction of steepest ascent. Gradient descent follows the negative gradient downhill on the loss surface. |
+| **Algebraic** | The gradient is computed by applying the chain rule of calculus to the nested function composition that defines the network. |
+| **Implementational** | The gradient is computed as message passing on a computation graph, where each node computes local derivatives and passes error signals to its parents. |
+
+All three are true at the same time. Being comfortable with all three is what separates someone who has "used" neural networks from someone who actually understands them.
+
+---
+
+## 14. Summary and Retrieval Practice
+
+### The Formulas You Need to Own
+
+| Concept | Formula / Rule | One-line meaning |
+|---|---|---|
+| **Bar notation** | $\bar{v} \doteq \partial\mathcal{L}/\partial v$ | Error signal: how sensitive the loss is to $v$ |
+| **Base case** | $\overline{v_N} = 1$ | The loss is perfectly sensitive to itself |
+| **Single-child rule** | $\overline{v_i} = \overline{v_{\text{child}}}\cdot\partial v_{\text{child}}/\partial v_i$ | Chain rule: error from child times local derivative |
+| **Multi-child rule** | $\overline{v_i} = \sum_{j\in\text{Ch}(v_i)}\overline{v_j}\cdot\partial v_j/\partial v_i$ | Sum over all children (multivariate chain rule) |
+| **Weight gradient** | $\overline{W^{(l)}} = \bar{\mathbf{z}}^{(l)}(\mathbf{z}^{(l-1)})^\top$ | Outer product of error signal and input activation |
+| **Propagating backward** | $\bar{\mathbf{h}} = W^{(2)\top}\bar{\mathbf{y}}$ | Transposed weights carry error backward |
+| **Through activation** | $\bar{\mathbf{z}} = \bar{\mathbf{h}}\odot\sigma'(\mathbf{z})$ | Elementwise: error times activation derivative |
+| **Backprop cost** | $\approx 2\times$ forward pass | Linear in parameters, inputs, hidden nodes |
+| **Dead units** | $\sigma'(z)\approx 0$ kills $\bar{z}_i$ | Saturated neurons stop learning; ReLU fixes for $z>0$ |
+
+### Retrieval Practice
+
+<CollapsibleStep title="Q1: What is backpropagation, in one sentence?" variant="detail">
+
+**Question:** State this conceptually, not as a list of equations.
+
+**Answer:** Backpropagation is an efficient algorithm for computing the gradient of the loss with respect to all parameters in a neural network, by applying the chain rule in a specific order (from loss backward to inputs) that lets each intermediate derivative be computed once and reused by all earlier nodes that depend on it.
+
+</CollapsibleStep>
+
+<CollapsibleStep title="Q2: Derive the full backward pass for z=wx+b, y=σ(z), L=½(y-t)²" variant="detail">
+
+**Question:** Write out all four error signals ($\bar{y}, \bar{z}, \bar{w}, \bar{b}$) and show the derivation of each using the bar notation rule. No peeking.
+
+**Answer:**
+
+**Base case:** $\overline{\mathcal{L}} = 1$
+
+**$\bar{y}$:** Only child of $y$ is $\mathcal{L}$. $\bar{y} = \overline{\mathcal{L}}\cdot\partial\mathcal{L}/\partial y = 1\cdot(y-t) = y-t$
+
+**$\bar{z}$:** Only child of $z$ is $y$. $\bar{z} = \bar{y}\cdot dy/dz = (y-t)\cdot\sigma'(z)$
+
+**$\bar{w}$:** Only child of $w$ is $z$. $\bar{w} = \bar{z}\cdot\partial z/\partial w = \bar{z}\cdot x$
+
+**$\bar{b}$:** Only child of $b$ is $z$. $\bar{b} = \bar{z}\cdot\partial z/\partial b = \bar{z}\cdot 1 = \bar{z}$
+
+</CollapsibleStep>
+
+<CollapsibleStep title="Q3: Why does L2 regularization require the multivariate chain rule?" variant="detail">
+
+**Question:** Identify which node has multiple children and write the correct expression for its error signal.
+
+**Answer:** The weight $w$ has two children: $z = wx + b$ and $\mathcal{R} = \tfrac{1}{2}w^2$. Applying the multi-child rule:
+
+$$\bar{w} = \bar{z}\cdot\frac{\partial z}{\partial w} + \overline{\mathcal{R}}\cdot\frac{d\mathcal{R}}{dw} = \bar{z}\cdot x + \overline{\mathcal{R}}\cdot w$$
+
+The second term $\overline{\mathcal{R}}\cdot w = \lambda w$ is the gradient of the regularization penalty. It is the term that pulls weights toward zero during training. Without the multi-child rule, you would miss it entirely.
+
+</CollapsibleStep>
+
+<CollapsibleStep title="Q4: Why is h̄ᵢ = Σₖ ȳₖ w⁽²⁾ₖᵢ in the MLP?" variant="detail">
+
+**Question:** Justify this formula using the multi-child rule. What are the children of $h_i$?
+
+**Answer:** In a two-layer MLP, $h_i$ feeds into every output: $y_k = \sum_i w_{ki}^{(2)} h_i + b_k^{(2)}$ for all $k \in \{1,\dots,K\}$. So $h_i$ has $K$ children (one per output).
+
+Applying the multi-child rule:
+
+$$\bar{h}_i = \sum_{k=1}^K \bar{y}_k \cdot \frac{\partial y_k}{\partial h_i} = \sum_{k=1}^K \bar{y}_k \cdot w_{ki}^{(2)}$$
+
+In vector form, stacking over all $i$: $\bar{\mathbf{h}} = W^{(2)\top}\bar{\mathbf{y}}$.
+
+</CollapsibleStep>
+
+<CollapsibleStep title="Q5: Why does finite differencing fail for large networks?" variant="detail">
+
+**Question:** Give the complexity argument. What is the cost in terms of $N$ (data) and $D$ (parameters)?
+
+**Answer:** To estimate $\partial E/\partial w_i$ via finite differences, you need two forward passes (one for $w_i + \epsilon$, one for $w_i - \epsilon$). For a $D$-dimensional parameter vector, you need $2D$ forward passes to estimate all $D$ partial derivatives. Each forward pass on $N$ data points costs $O(ND)$. Total: $O(ND^2)$ per gradient step.
+
+Backpropagation computes the exact same gradient in $O(ND)$ — by avoiding the repeated forward passes through smart reuse of intermediate results. For $D = 10^6$ parameters, finite differences is $10^6\times$ more expensive than backprop per gradient step.
+
+</CollapsibleStep>
+
+<CollapsibleStep title="Q6: Explain dead units. Why does sigmoid cause them? Why does ReLU help?" variant="detail">
+
+**Question:** Connect your answer to the backward pass formula $\bar{z}_i = \bar{h}_i \cdot \sigma'(z_i)$.
+
+**Answer:** A dead unit is a neuron whose weights receive essentially zero gradient, so they stop being updated by gradient descent.
+
+The backward pass multiplies the incoming error signal by the activation's derivative: $\bar{z}_i = \bar{h}_i \cdot \sigma'(z_i)$. For sigmoid, $\sigma'(z) = \sigma(z)(1-\sigma(z)) \to 0$ when $|z|$ is large. If a neuron saturates (large positive or large negative pre-activation), its derivative is near zero, so $\bar{z}_i \approx 0$ regardless of how large $\bar{h}_i$ is. The gradient signal is killed, and the weights feeding into this neuron cannot be updated.
+
+ReLU has $\text{ReLU}'(z) = 1$ for $z > 0$, so the gradient passes through unchanged for active neurons. For $z < 0$, $\text{ReLU}'(z) = 0$, so neurons with consistently negative pre-activations are still dead. Leaky ReLU (small slope $\alpha$ for $z < 0$) keeps a small gradient path open even for negative neurons.
+
+</CollapsibleStep>
+
+### Things You Must Be Able to Do on Demand
+
+1. State the definition of $\bar{v}$ in words and math.
+2. Write the backward pass rule for a single-child graph and for a multi-child graph.
+3. Draw the computation graph for a simple network and label all nodes correctly.
+4. Run the full backward pass on a 2–3 node example, showing each step.
+5. Identify which nodes have multiple children in a graph and apply the sum rule.
+6. Write the vector-form backward pass for a 2-layer MLP.
+7. Explain why backprop is $O(\text{linear})$ in parameters and finite differences is $O(\text{quadratic})$.
+8. Explain vanishing gradients using the backward pass formula and name which activations cause it.
+
+<Callout variant="key">
+  Backpropagation is not magic. It is dynamic programming applied to the chain rule. The insight is to traverse the computation graph in reverse order, computing each derivative once, so that every intermediate result is reused by everything that came before it. That reuse is what makes the cost linear.
+</Callout>

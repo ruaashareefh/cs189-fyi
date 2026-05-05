@@ -1,0 +1,744 @@
+---
+lecture: 15
+title: "Learning with Gradient Descent"
+description: "From writing down the loss to taking a step to proving convergence. Derive the quadratic approximation, read the Hessian's eigenvalues to classify critical points, bound the learning rate by λ_max, and see how momentum, SGD, and Adam fix the failure modes of plain GD."
+tags:
+  - { label: "Gradient Descent", type: "concept" }
+  - { label: "Hessian", type: "math" }
+  - { label: "Convergence", type: "proof" }
+  - { label: "SGD/Adam", type: "concept" }
+readTime: 55
+status: published
+date: "2025-02-23"
+prereqs:
+  - "13-sgd"
+  - "14-mle-map"
+---
+
+<Callout variant="note" title="Contents">
+  1. The Gradient Descent Algorithm
+  2. Worked Example: Linear Model on XOR (Midterm Exercise)
+  3. When Does GD Converge? The Quadratic Approximation
+  4. The Hessian: Second Derivative in Many Dimensions
+  5. Eigendecomposition: Reading Geometry from the Hessian
+  6. Learning Rate Bounds and the Condition Number
+  7. The Failure Modes of Plain GD
+  8. Momentum: Accumulating Direction
+  9. Stochastic Gradient Descent
+  10. Adaptive Methods: AdaGrad, RMSProp, Adam
+  11. Learning Rate Schedules
+  12. **How This Material Is Tested**
+  13. Exam Prep: Practice Problems (9 problems with solutions)
+  14. Quick Reference
+</Callout>
+
+---
+
+## 1. The Gradient Descent Algorithm
+
+The big picture: you have a model $f_\mathbf{w}(\mathbf{x})$ and a loss $J(\mathbf{w})$ that measures how bad it is. Training means finding $\mathbf{w}$ that minimizes $J$. Gradient descent does this iteratively: start somewhere, measure which direction is downhill, take a small step that way, repeat.
+
+$$
+\mathbf{w}^{(t+1)} = \mathbf{w}^{(t)} - \eta \, \nabla J(\mathbf{w}^{(t)})
+$$
+
+The negative gradient $-\nabla J$ always points downhill. $\eta$ controls how big a step you take.
+
+<Callout variant="definition" title="Gradient descent template">
+Every variant (SGD, mini-batch, momentum, Adam) fits this same skeleton:
+
+1. **Initialize** $\mathbf{w}^{(0)}$ (usually Gaussian random)
+2. **Loop** for $t = 0, 1, 2, \ldots, T_{\max}$:
+   - Compute gradient $\nabla J(\mathbf{w}^{(t)})$
+   - Update: $\mathbf{w}^{(t+1)} = \mathbf{w}^{(t)} - \eta \, \nabla J(\mathbf{w}^{(t)})$
+   - Stop if $\|\mathbf{w}^{(t+1)} - \mathbf{w}^{(t)}\| < \epsilon$ (converged)
+
+The algorithms differ in *how* they estimate the gradient and *how* they take the step.
+</Callout>
+
+<Callout variant="note" title="Notation check">
+This lecture writes the loss as $J(\mathbf{w})$ instead of $E(\mathbf{w})$ from previous lectures. Same object, different letter. The unknown parameters are $\mathbf{w} = [w_1, w_2, \ldots]^T$ plus bias $b$, collected into $\boldsymbol{\theta}$.
+</Callout>
+
+<Callout variant="note" title="Why gradient information matters so much">
+Without gradients, finding the minimum of a $W$-parameter model takes $O(W^3)$ steps: you need $O(W^2)$ evaluations to map the curvature, each costing $O(W)$. Using the gradient brings this to $O(W^2)$: each gradient evaluation costs $O(W)$ and delivers $W$ pieces of directional information, so $O(W)$ evaluations suffice. This efficiency gap is why backpropagation was a breakthrough.
+</Callout>
+
+---
+
+## 2. Worked Example: Linear Model on XOR (Midterm Exercise)
+
+<Callout variant="note" title="Professor says">
+"This is the thing that I absolutely need you to know for the midterm and for life and for machine learning." Do this cold on paper at least twice before the exam.
+</Callout>
+
+### The setup
+
+Linear model $f(\mathbf{x}) = w_1 x_1 + w_2 x_2 + b$, with $\mathbf{w} \in \mathbb{R}^2$ and $b \in \mathbb{R}$. Training data (XOR):
+
+| $x_1$ | $x_2$ | $y$ |
+|-------|-------|-----|
+| 0     | 0     | 0   |
+| 0     | 1     | 1   |
+| 1     | 0     | 1   |
+| 1     | 1     | 0   |
+
+**Task:** write the MSE loss $J$, compute $\nabla J$, take one GD step from $\boldsymbol{\theta}^{(0)} = (0, 1, 1)$ with $\eta = 0.5$, verify the loss went down.
+
+### Step 1: Write the loss
+
+The MSE loss is the average squared error over all data points. Start by writing it out fully, one term per row, with every $x_i$ and $y_i$ substituted in:
+
+<CollapsibleStep title="Expand J term by term">
+$$
+J(w_1, w_2, b) = \frac{1}{4}\Big[
+  \underbrace{(0 - (w_1 \cdot 0 + w_2 \cdot 0 + b))^2}_{\text{row 1}}
+  + \underbrace{(1 - (w_1 \cdot 0 + w_2 \cdot 1 + b))^2}_{\text{row 2}}
+  + \underbrace{(1 - (w_1 \cdot 1 + w_2 \cdot 0 + b))^2}_{\text{row 3}}
+  + \underbrace{(0 - (w_1 \cdot 1 + w_2 \cdot 1 + b))^2}_{\text{row 4}}
+\Big]
+$$
+
+Simplify each term (cancel the zero multiplications):
+
+$$
+J(w_1, w_2, b) = \frac{1}{4}\Big[b^2 + (1 - w_2 - b)^2 + (1 - w_1 - b)^2 + (w_1 + w_2 + b)^2\Big]
+$$
+
+The $\tfrac{1}{4}$ is the "mean" in MSE. It rescales the loss but does not change the minimizer. It does effectively rescale $\eta$ if you forget it on an exam.
+</CollapsibleStep>
+
+### Step 2: Evaluate predictions at $\boldsymbol{\theta}^{(0)} = (0, 1, 1)$
+
+<CollapsibleStep title="Plug in w₁=0, w₂=1, b=1">
+With these values $f(\mathbf{x}) = 0 \cdot x_1 + 1 \cdot x_2 + 1 = x_2 + 1$:
+
+| Row | $\mathbf{x}$ | $y$ | $\hat{y} = f(\mathbf{x})$ | $(y - \hat{y})^2$ |
+|-----|--------|-----|-----------------|-------------|
+| 1   | (0,0)  | 0   | 1               | 1           |
+| 2   | (0,1)  | 1   | 2               | 1           |
+| 3   | (1,0)  | 1   | 1               | 0           |
+| 4   | (1,1)  | 0   | 2               | 4           |
+
+$$J(\boldsymbol{\theta}^{(0)}) = \tfrac{1}{4}(1 + 1 + 0 + 4) = \tfrac{6}{4} = 1.5$$
+</CollapsibleStep>
+
+### Step 3: Compute the gradient symbolically
+
+The gradient $\nabla J$ is a 3-vector (one partial derivative per parameter). The update rule $\boldsymbol{\theta}^{(t+1)} = \boldsymbol{\theta}^{(t)} - \eta \nabla J$ requires them to match in dimension.
+
+<CollapsibleStep title="Compute ∂J/∂w₁ step by step">
+Rows 1 and 2 have $x_1 = 0$, so those terms don't depend on $w_1$ at all: their derivatives are 0.
+
+For rows 3 and 4, apply the chain rule $\frac{d}{dw}(a - w)^2 = -2(a-w)$:
+
+$$
+\frac{\partial J}{\partial w_1} = \frac{1}{4}\Big[0 + 0 + (-2)(1 - w_1 - b)(1) + (-2)(-w_1 - w_2 - b)(1)\Big]
+$$
+
+Expand and collect:
+$$
+= \frac{1}{4}\Big[-2 + 2w_1 + 2b + 2w_1 + 2w_2 + 2b\Big] = \frac{1}{2}(2w_1 + w_2 + 2b - 1)
+$$
+</CollapsibleStep>
+
+<CollapsibleStep title="Compute ∂J/∂w₂ and ∂J/∂b">
+By the same argument, rows with $x_2 = 0$ (rows 1 and 3) contribute 0 to $\partial/\partial w_2$:
+
+$$
+\frac{\partial J}{\partial w_2} = \frac{1}{4}\Big[0 + (-2)(1 - w_2 - b)(1) + 0 + (-2)(-w_1 - w_2 - b)(1)\Big] = \frac{1}{2}(w_1 + 2w_2 + 2b - 1)
+$$
+
+For $b$, every row contributes since $b$ appears in every prediction:
+
+$$
+\frac{\partial J}{\partial b} = \frac{1}{4}\Big[(-2)(b) + (-2)(1-w_2-b) + (-2)(1-w_1-b) + (-2)(w_1+w_2+b)\Big] = w_1 + w_2 + 2b - 1
+$$
+
+Full symbolic gradient:
+$$
+\nabla J(w_1, w_2, b) = \begin{bmatrix} \tfrac{1}{2}(2w_1 + w_2 + 2b - 1) \\ \tfrac{1}{2}(w_1 + 2w_2 + 2b - 1) \\ w_1 + w_2 + 2b - 1 \end{bmatrix}
+$$
+</CollapsibleStep>
+
+<Callout variant="note" title="The key pattern">
+$\partial J / \partial w_k = 0$ for any row where $x_k = 0$. That row's prediction doesn't depend on $w_k$, so its error can't change when $w_k$ changes. The bias $b$ appears in every prediction, so every row always contributes to $\partial J / \partial b$. This pattern makes gradient computation mechanical once you see it.
+</Callout>
+
+### Step 4: Evaluate the gradient at $\boldsymbol{\theta}^{(0)} = (0, 1, 1)$
+
+Substitute $w_1=0, w_2=1, b=1$:
+
+$$
+\nabla J(0, 1, 1) = \begin{bmatrix} \tfrac{1}{2}(0 + 1 + 2 - 1) \\ \tfrac{1}{2}(0 + 2 + 2 - 1) \\ 0 + 1 + 2 - 1 \end{bmatrix} = \begin{bmatrix} 1 \\ 3/2 \\ 2 \end{bmatrix}
+$$
+
+Nonzero gradient: $(0,1,1)$ is not a local minimum. We can improve.
+
+### Step 5: Take the gradient step
+
+$$
+\boldsymbol{\theta}^{(1)} = \begin{bmatrix} 0 \\ 1 \\ 1 \end{bmatrix} - 0.5 \begin{bmatrix} 1 \\ 3/2 \\ 2 \end{bmatrix} = \begin{bmatrix} -1/2 \\ 1/4 \\ 0 \end{bmatrix}
+$$
+
+The gradient points in the direction of steepest increase. Subtracting it moves us downhill. Multiplying by $\eta = 0.5$ controls how far.
+
+### Step 6: Verify the loss went down
+
+<CollapsibleStep title="Compute J(θ⁽¹⁾)">
+At $\boldsymbol{\theta}^{(1)} = (-1/2, 1/4, 0)$, predictions are $f(\mathbf{x}) = -\tfrac{1}{2}x_1 + \tfrac{1}{4}x_2$:
+
+- Row 1 $(0,0)$: $f = 0$, error $(0-0)^2 = 0$
+- Row 2 $(0,1)$: $f = 1/4$, error $(1 - 1/4)^2 = 9/16$
+- Row 3 $(1,0)$: $f = -1/2$, error $(1 + 1/2)^2 = 9/4 = 36/16$
+- Row 4 $(1,1)$: $f = -1/4$, error $(0 + 1/4)^2 = 1/16$
+
+$$J(\boldsymbol{\theta}^{(1)}) = \tfrac{1}{4} \cdot \tfrac{0 + 9 + 36 + 1}{16} = \tfrac{46}{64} \approx 0.718$$
+
+Loss dropped from $1.5 \to 0.718$. GD worked. ✓
+</CollapsibleStep>
+
+<Callout variant="note" title="Professor says">
+XOR is not linearly separable. No matter how long you run GD, $J$ converges to a positive value, not zero. That is not a bug; it is a fundamental limit of linear models. It is exactly what motivates adding hidden layers (neural networks): a two-layer network can represent XOR perfectly.
+</Callout>
+
+---
+
+## 3. When Does GD Converge? The Quadratic Approximation
+
+### Step 1: Why we can't analyze J directly
+
+The real loss function $J$ can be any smooth nonlinear function. There is no closed-form answer to "when does GD converge on $J$?" for an arbitrary $J$. The loss surface could be a complicated high-dimensional landscape with hills, valleys, saddles, and flat plains. We have to simplify the problem.
+
+### Step 2: Zoom in and approximate locally as a quadratic
+
+Here is the key insight: any smooth function, when you zoom in close enough at a point $\hat{x}$, looks like a parabola. The further you zoom in, the more it looks like one. The **Taylor expansion** makes this precise: it builds the best polynomial approximation to $f$ at $\hat{x}$ by matching the value, slope, and curvature at that point.
+
+$$
+\tilde{f}(x) = \underbrace{f(\hat{x})}_{\text{constant: value at } \hat{x}} \;+\; \underbrace{f'(\hat{x})\,(x - \hat{x})}_{\text{linear: slope = gradient}} \;+\; \underbrace{\frac{1}{2}f''(\hat{x})\,(x - \hat{x})^2}_{\text{quadratic: curvature = 2nd derivative}}
+$$
+
+Truncate at the quadratic term. Now $f$ is locally approximated as a parabola. Quadratics are the only function class where GD convergence has a clean, closed-form answer.
+
+### GD on the simplest quadratic
+
+Let $J(w) = aw^2$. One GD step:
+
+$$w^{(t+1)} = w^{(t)} - \eta \cdot 2aw^{(t)} = (1 - 2a\eta)\,w^{(t)}$$
+
+After $\tau$ steps: $w^{(\tau)} = (1 - 2a\eta)^\tau\,w^{(0)}$. This is a geometric series. It decays to 0 iff $|1-2a\eta| < 1$, which requires $\eta < 1/a$.
+
+<Callout variant="note" title="Curvature directly controls the max learning rate">
+The coefficient $a$ is the curvature of the quadratic. Double the curvature and you must halve the learning rate. In multiple dimensions, $a$ generalizes to a matrix (the Hessian) and the scalar curvature generalizes to its eigenvalues.
+</Callout>
+
+---
+
+## 4. The Hessian: Second Derivative in Many Dimensions
+
+### Definition
+
+For a scalar-valued $J: \mathbb{R}^D \to \mathbb{R}$, the **Hessian** is the $D \times D$ matrix of all second partial derivatives:
+
+<Callout variant="definition" title="Hessian matrix">
+$$
+H_{ij} = \frac{\partial^2 J}{\partial w_i \, \partial w_j}
+$$
+
+- Size: $D \times D$ (one row and column per parameter)
+- Always **symmetric**: $H_{ij} = H_{ji}$ (Clairaut's theorem: mixed partials are equal)
+- Entry $H_{ij}$ measures how the gradient in direction $i$ changes when you move in direction $j$
+- Diagonal entries $H_{ii}$: pure curvature along axis $i$
+- Off-diagonal entries $H_{ij}$: cross-curvature coupling axis $i$ with axis $j$
+</Callout>
+
+### General Taylor expansion of the error surface
+
+The 2nd-order Taylor expansion of $J$ around any point $\hat{\mathbf{w}}$:
+
+$$
+\tilde{J}(\mathbf{w}) = J(\hat{\mathbf{w}}) + \underbrace{(\mathbf{w} - \hat{\mathbf{w}})^T \mathbf{b}}_{\text{linear term, } \mathbf{b} = \nabla J(\hat{\mathbf{w}})} + \underbrace{\frac{1}{2}(\mathbf{w} - \hat{\mathbf{w}})^T H (\mathbf{w} - \hat{\mathbf{w}})}_{\text{quadratic term, } H = \nabla\nabla J(\hat{\mathbf{w}})}
+$$
+
+$\mathbf{b}$ is the gradient (a vector), $H$ is the Hessian (a matrix). The Hessian is the matrix equivalent of the second derivative.
+
+### Special case: at a critical point
+
+At a critical point $\mathbf{w}^*$ where $\nabla J(\mathbf{w}^*) = \mathbf{0}$, the linear term vanishes:
+
+$$
+\tilde{J}(\mathbf{w}) = J(\mathbf{w}^*) + \frac{1}{2}(\mathbf{w} - \mathbf{w}^*)^T H (\mathbf{w} - \mathbf{w}^*)
+$$
+
+This is a **quadratic form**: it fully describes the local geometry and tells us whether $\mathbf{w}^*$ is a minimum, maximum, or saddle.
+
+<Callout variant="definition" title="Positive definite matrices">
+A matrix $H$ is **positive definite** if $\mathbf{v}^T H \mathbf{v} > 0$ for all $\mathbf{v} \neq \mathbf{0}$, equivalently all eigenvalues are positive. The necessary and sufficient condition for $\mathbf{w}^*$ to be a local minimum: $\nabla J(\mathbf{w}^*) = \mathbf{0}$ **and** $H$ is positive definite at $\mathbf{w}^*$.
+</Callout>
+
+### Reading the Hessian by inspection
+
+<CollapsibleStep title="Example: E(w) = (w₀−1)² + (w₁−2)² + 1">
+$$
+\nabla E = \begin{bmatrix} 2(w_0 - 1) \\ 2(w_1 - 2) \end{bmatrix}
+$$
+
+$$
+H = \begin{bmatrix} \partial^2 E/\partial w_0^2 & \partial^2 E/\partial w_0\partial w_1 \\ \partial^2 E/\partial w_1\partial w_0 & \partial^2 E/\partial w_1^2 \end{bmatrix} = \begin{bmatrix} 2 & 0 \\ 0 & 2 \end{bmatrix}
+$$
+
+Off-diagonals are 0 because $w_0$ and $w_1$ appear in entirely separate terms: they don't interact. Diagonals are $2 = 2 \times (\text{coefficient of squared term})$.
+</CollapsibleStep>
+
+<Callout variant="note" title="Reading the Hessian by inspection">
+For a quadratic $\tfrac{1}{2}\mathbf{w}^T H \mathbf{w}$:
+- Diagonal $H_{ii}$: $2 \times$ (coefficient of $w_i^2$ term)
+- Off-diagonal $H_{ij}$: coefficient of the $w_i w_j$ cross term (0 if there is none)
+</Callout>
+
+---
+
+## 5. Eigendecomposition: Reading Geometry from the Hessian
+
+### Why eigendecomposition?
+
+The Hessian describes multidimensional curvature. In standard coordinates $(w_1, w_2, \ldots)$, the dimensions are often **coupled**: moving along one axis affects the slope along another, which creates tilted, elliptical contours that are hard to reason about.
+
+The **spectral theorem** for symmetric matrices gives us a way out. It says: for any symmetric $H$, there exists an orthogonal coordinate rotation that makes $H$ diagonal. Applying this rotation finds a new basis of **orthonormal eigenvectors** $\{\mathbf{u}_i\}$ that perfectly align with the principal axes of those tilted ellipses.
+
+By projecting the weight offset onto these eigenvectors via $\alpha_i = (\mathbf{w} - \mathbf{w}^*)^T \mathbf{u}_i$, we mathematically **decouple the dimensions**. What was a coupled high-dimensional system becomes a set of fully independent 1D problems.
+
+**The payoff:** the eigendecomposition transforms the local quadratic approximation from a messy coupled expression into a clean, linearly separable sum of independent 1D parabolas:
+$$\tilde{J}(\boldsymbol{\alpha}) = J(\mathbf{w}^*) + \frac{1}{2}\sum_i \alpha_i^2 \lambda_i$$
+In this new coordinate system, each eigenvalue $\lambda_i$ is just a simple scalar telling you the exact curvature along its independent eigenvector direction $\mathbf{u}_i$.
+
+### The math
+
+Since $H$ is symmetric, it has real eigenvalues and orthonormal eigenvectors:
+
+$$H \mathbf{u}_i = \lambda_i \mathbf{u}_i, \qquad \mathbf{u}_i^T \mathbf{u}_j = \delta_{ij}$$
+
+Write the weight offset in the eigenbasis: $\mathbf{w} - \mathbf{w}^* = \sum_i \alpha_i \mathbf{u}_i$, where $\alpha_i = (\mathbf{w} - \mathbf{w}^*)^T \mathbf{u}_i$.
+
+Substituting into the quadratic form:
+
+$$\tilde{J}(\boldsymbol{\alpha}) = J(\mathbf{w}^*) + \frac{1}{2}\sum_i \alpha_i^2 \lambda_i$$
+
+<CollapsibleStep title="Derivation: why cross terms vanish">
+Start with the quadratic form and expand using the eigenbasis:
+
+$$(\mathbf{w} - \mathbf{w}^*)^T H (\mathbf{w} - \mathbf{w}^*) = \left(\sum_i \alpha_i \mathbf{u}_i\right)^T H \left(\sum_j \alpha_j \mathbf{u}_j\right)$$
+
+Substitute $H\mathbf{u}_j = \lambda_j \mathbf{u}_j$:
+
+$$= \left(\sum_i \alpha_i \mathbf{u}_i\right)^T \left(\sum_j \alpha_j \lambda_j \mathbf{u}_j\right) = \sum_{i,j} \alpha_i \alpha_j \lambda_j\, \mathbf{u}_i^T \mathbf{u}_j$$
+
+By orthonormality $\mathbf{u}_i^T \mathbf{u}_j = \delta_{ij}$, every cross term with $i \neq j$ is zero:
+
+$$= \sum_i \alpha_i^2 \lambda_i \quad \checkmark$$
+</CollapsibleStep>
+
+### Classifying critical points
+
+Each direction $\mathbf{u}_i$ now behaves like an independent 1D quadratic with curvature $\lambda_i$. Reading the geometry is trivial:
+
+<Callout variant="definition" title="Second derivative test: eigenvalue version">
+At a critical point $\mathbf{w}^*$ where $\nabla J(\mathbf{w}^*) = \mathbf{0}$:
+
+| Eigenvalues of $H$ | Type |
+|---|---|
+| All $\lambda_i > 0$ | Local **minimum** (bowl in every direction) |
+| All $\lambda_i < 0$ | Local **maximum** (inverted bowl) |
+| Mixed signs | **Saddle point** |
+
+In high dimensions, saddle points vastly outnumber local minima. Training deep networks is fundamentally about escaping saddles.
+</Callout>
+
+<Callout variant="note" title="Professor says: the potato chip">
+"In 3D you can have a function where in one direction you're at a minimum and in another direction you're at a maximum, at the same point. This is a true saddle point. You can't see this phenomenon in 1D. The eigenvectors tell you exactly which directions behave which way."
+</Callout>
+
+The contours of the quadratic form are **ellipses** aligned with the eigenvectors. Axis lengths are proportional to $1/\sqrt{\lambda_i}$: large eigenvalue means steep curvature means short axis.
+
+---
+
+## 6. Learning Rate Bounds and the Condition Number
+
+### Deriving the convergence condition carefully
+
+In the eigenbasis, GD on each coordinate $\alpha_i$ is independent. One GD step on coordinate $\alpha_i$:
+
+$$\alpha_i^{(\text{new})} = \alpha_i^{(\text{old})} - \eta \cdot \lambda_i \alpha_i^{(\text{old})} = (1 - \eta\lambda_i)\,\alpha_i^{(\text{old})}$$
+
+After $\tau$ steps, $\alpha_i^{(\tau)} = (1 - \eta\lambda_i)^\tau\,\alpha_i^{(0)}$.
+
+<Callout variant="definition" title="Convergence condition">
+For $\alpha_i^{(\tau)} \to 0$ as $\tau \to \infty$, we need the geometric factor to shrink:
+
+$$|1 - \eta\lambda_i| < 1 \quad \text{for every eigenvalue } \lambda_i$$
+
+Two things to know about this condition:
+- **Smaller $|1-\eta\lambda_i|$ is strictly better**: the closer to 0, the faster that direction converges
+- **Negative $1-\eta\lambda_i$ causes oscillation**: the sign flips each step, so $\alpha_i$ bounces around zero before converging
+
+To maximize per-step progress, we want $\eta$ as large as possible. The binding constraint is the largest eigenvalue $\lambda_{\max}$:
+
+$$\boxed{\eta < \frac{2}{\lambda_{\max}}}$$
+
+If $\eta \geq 2/\lambda_{\max}$, then $|1-\eta\lambda_{\max}| \geq 1$ and that direction diverges or never improves.
+</Callout>
+
+### The condition number and slow convergence
+
+With $\eta = 2/\lambda_{\max}$ (the largest safe value), the slowest-converging direction is $\lambda_{\min}$. Its per-step factor is:
+
+$$\left(1 - \frac{2\lambda_{\min}}{\lambda_{\max}}\right)^\tau = \left(1 - \frac{2}{\kappa}\right)^\tau$$
+
+<Callout variant="definition" title="Condition number">
+$$\kappa = \frac{\lambda_{\max}}{\lambda_{\min}}$$
+
+- $\kappa = 1$: all eigenvalues equal (spherical contours). Every direction converges at the same rate. Fastest possible convergence.
+- $\kappa \gg 1$: thin elongated ellipses. The large-$\lambda$ directions converge fast but force $\eta$ to be tiny. The small-$\lambda$ direction then takes an enormous number of steps. The training bottleneck is always the flattest direction.
+</Callout>
+
+<Callout variant="note" title="Why you can't compute H for large models">
+For LLaMA 8B, $D = 8 \times 10^9$ parameters. The Hessian is $D \times D \approx 6 \times 10^{19}$ entries. It cannot be stored, let alone diagonalized. This is exactly why adaptive methods like Adam exist: they approximate the per-direction curvature cheaply.
+</Callout>
+
+---
+
+## 7. The Failure Modes of Plain GD
+
+A single fixed $\eta$ for all directions leads to two failure modes, both rooted in the same cause:
+
+| Failure mode | Trigger | Effect |
+|---|---|---|
+| **$\eta$ too small** | Flat directions (small $\lambda_{\min}$) | Tiny steps, painfully slow progress |
+| **$\eta$ too large** | Steep directions (large $\lambda_{\max}$) | Overshoot, oscillate, diverge |
+
+Root cause: different directions have wildly different curvatures, but $\eta$ is one number shared across all of them. Momentum and Adam fix this in different ways.
+
+---
+
+## 8. Momentum: Accumulating Direction
+
+### The update rule
+
+Momentum adds a "velocity" term: memory of the previous step's direction.
+
+$$
+\mathbf{w}^{(\tau)} = \mathbf{w}^{(\tau-1)} - \eta \, \nabla J(\mathbf{w}^{(\tau-1)}) + \mu\,(\mathbf{w}^{(\tau-1)} - \mathbf{w}^{(\tau-2)})
+$$
+
+Or equivalently in terms of the update $\Delta\mathbf{w}^{(\tau)} = \mathbf{w}^{(\tau)} - \mathbf{w}^{(\tau-1)}$:
+
+$$
+\Delta\mathbf{w}^{(\tau)} = -\eta\,\nabla J(\mathbf{w}^{(\tau-1)}) + \mu\,\Delta\mathbf{w}^{(\tau-1)}
+$$
+
+### What $\mu$ controls: how strong the memory is
+
+- **$\mu = 0$**: no memory at all, plain GD
+- **$\mu = 0.9$**: carry 90% of the last step forward (the standard choice)
+- **$\mu \to 1$**: never forget anything, which is unstable
+
+### Why momentum fixes both failure modes
+
+**Flat directions: momentum accelerates.** In a flat region the gradient barely changes step to step, so treat it as approximately constant: $\nabla J \approx \mathbf{g}$. What happens to the update over many steps? Each step's update feeds into the next via the $\mu\,\Delta\mathbf{w}^{(\tau-1)}$ term:
+
+<CollapsibleStep title="Flat directions: effective learning rate derivation">
+With $\nabla J \approx \mathbf{g}$ constant, unroll the recursion:
+
+$$\Delta\mathbf{w}^{(\tau)} = -\eta\mathbf{g} + \mu(-\eta\mathbf{g} + \mu(-\eta\mathbf{g} + \cdots))$$
+
+This is a geometric series that sums to:
+
+$$\Delta\mathbf{w}^{(\infty)} = -\eta\mathbf{g}(1 + \mu + \mu^2 + \cdots) = -\frac{\eta}{1-\mu}\,\mathbf{g}$$
+
+With $\mu = 0.9$: the effective learning rate becomes $\eta/(1-0.9) = 10\eta$. Momentum drives through flat regions $10\times$ faster.
+</CollapsibleStep>
+
+**Steep directions: momentum dampens oscillations.** When the gradient alternates sign each step ($+\mathbf{g}, -\mathbf{g}, +\mathbf{g}, \ldots$), the momentum terms partially cancel:
+
+<CollapsibleStep title="Steep directions: effective learning rate derivation">
+With alternating sign, the geometric series alternates:
+
+$$\Delta\mathbf{w}^{(\infty)} = -\eta\mathbf{g}(1 - \mu + \mu^2 - \cdots) = -\frac{\eta}{1+\mu}\,\mathbf{g}$$
+
+With $\mu = 0.9$: effective learning rate becomes $\eta/(1+0.9) \approx 0.53\eta$. Momentum cuts the effective step in oscillating directions roughly in half, reducing divergence risk.
+</CollapsibleStep>
+
+<Callout variant="note" title="The clean result">
+Momentum automatically increases the effective $\eta$ in consistent-gradient directions and decreases it in oscillating directions. It adapts to the local geometry without ever computing the Hessian.
+</Callout>
+
+---
+
+## 9. Stochastic Gradient Descent
+
+### Why SGD is statistically justified
+
+The loss we actually care about is the **true risk**: expected loss over the full data distribution.
+
+$$J_{\text{true}}(\mathbf{w}) = \mathbb{E}_{(\mathbf{x}, y) \sim p(\mathbf{x},y)}\bigl[\ell(y,\, f_\mathbf{w}(\mathbf{x}))\bigr]$$
+
+We cannot compute this directly. So we approximate it with the **training error**, averaging over the $N$ points we have:
+
+$$J_{\text{train}}(\mathbf{w}) = \frac{1}{N}\sum_{n=1}^N \ell(y_n,\, f_\mathbf{w}(\mathbf{x}_n))$$
+
+Training error is already an **empirical estimate** of true risk. Therefore, the gradient of training error is an empirical estimate of the gradient of true risk. A single-point or mini-batch gradient is a **noisier** estimate of the same thing, but still **unbiased**. This is the statistical reason SGD is legitimate, not just a computational shortcut.
+
+### The spectrum of approximations
+
+| Method | Gradient estimate | Cost per step |
+|---|---|---|
+| **Batch GD** | $\frac{1}{N}\sum_{n=1}^{N} \nabla J_n(\mathbf{w})$ (all $N$ points) | $\mathcal{O}(ND)$ |
+| **Mini-batch SGD** | $\frac{1}{B}\sum_{b \in \mathcal{B}} \nabla J_b(\mathbf{w})$ ($B$ random points) | $\mathcal{O}(BD)$ |
+| **SGD** | $\nabla J_n(\mathbf{w})$ (one random point) | $\mathcal{O}(D)$ |
+
+### How to pick batch size
+
+<Callout variant="note" title="Choosing B in practice">
+Two forces pulling in opposite directions:
+
+- **Larger $B$**: lower-noise gradient estimate, better GPU utilization (parallelism), more stable training
+- **Smaller $B$**: cheaper per step, stochasticity helps escape local minima and saddle points
+
+Design rule: set $B$ to saturate your GPU's memory, then scale $\eta$ proportionally (the **linear scaling rule**: double $B$, double $\eta$). Common values: 64, 128, 256 (powers of 2 for hardware efficiency). "SGD" in practice almost always means mini-batch SGD.
+</Callout>
+
+<Callout variant="note" title="Data shuffling">
+Always shuffle the training set before drawing mini-batches. Raw data often has ordering artifacts (sorted by date, label, etc.) that create correlated gradients within a batch. Reshuffling each epoch prevents this and incidentally helps escape local minima.
+</Callout>
+
+---
+
+## 10. Adaptive Methods: AdaGrad, RMSProp, Adam
+
+### The core motivation
+
+Plain GD uses one $\eta$ for every parameter. But different parameters have very different curvatures: some are associated with steep directions (need small $\eta$), others with flat directions (need large $\eta$). The Hessian tells you exactly what $\eta$ to use for each direction, but it cannot be computed at scale.
+
+**Adaptive methods approximate this cheaply**: instead of computing Hessian eigenvalues, they track the gradient magnitude per parameter over time and use that to scale the learning rate per parameter.
+
+### AdaGrad
+
+Track the running sum of squared gradients for each parameter $i$:
+
+$$r_i^{(\tau)} = r_i^{(\tau-1)} + \left(\frac{\partial J}{\partial w_i}\right)^2$$
+
+Use it to scale the update:
+
+$$w_i^{(\tau)} = w_i^{(\tau-1)} - \frac{\eta}{\sqrt{r_i^{(\tau)}} + \epsilon} \cdot \frac{\partial J}{\partial w_i}$$
+
+The $\epsilon \approx 10^{-8}$ prevents division by zero.
+
+| Parameter history | $r_i$ | Effective $\eta$ | Behavior |
+|---|---|---|---|
+| Steep gradients (consistently large) | Large | Small | Careful steps |
+| Flat gradients (consistently small) | Small | Large | Bold steps |
+
+AdaGrad automatically takes careful steps where the loss is steep and bold steps where it is flat, without needing the Hessian.
+
+**Problem:** $r_i$ only ever grows. The effective $\eta$ only ever shrinks. Eventually every parameter gets a near-zero update and training stalls, even far from a minimum.
+
+### RMSProp
+
+Fix AdaGrad's stalling by replacing the cumulative sum with an exponential moving average:
+
+$$r_i^{(\tau)} = \beta\,r_i^{(\tau-1)} + (1-\beta)\left(\frac{\partial J}{\partial w_i}\right)^2$$
+
+Typically $\beta = 0.9$. Old gradients decay away, so $r_i$ reflects recent curvature rather than all history. The effective $\eta$ stays responsive throughout training.
+
+### Adam (RMSProp + Momentum)
+
+Adam combines RMSProp's adaptive scaling with a momentum term:
+
+<Callout variant="definition" title="Adam update (bias-corrected)">
+**First moment** (smoothed gradient, acts as momentum):
+$$s_i^{(\tau)} = \beta_1 s_i^{(\tau-1)} + (1-\beta_1)\frac{\partial J}{\partial w_i}$$
+
+**Second moment** (smoothed squared gradient, acts as RMSProp):
+$$r_i^{(\tau)} = \beta_2 r_i^{(\tau-1)} + (1-\beta_2)\left(\frac{\partial J}{\partial w_i}\right)^2$$
+
+**Bias correction** (compensates for both moments being initialized to 0):
+$$\hat{s}_i = \frac{s_i^{(\tau)}}{1 - \beta_1^\tau}, \qquad \hat{r}_i = \frac{r_i^{(\tau)}}{1 - \beta_2^\tau}$$
+
+**Update**:
+$$w_i^{(\tau)} = w_i^{(\tau-1)} - \eta\,\frac{\hat{s}_i}{\sqrt{\hat{r}_i} + \delta}$$
+
+Defaults: $\beta_1 = 0.9$, $\beta_2 = 0.99$, $\eta = 10^{-3}$, $\delta = 10^{-8}$.
+</Callout>
+
+Why Adam works: $\hat{s}_i$ gives direction (momentum), $\sqrt{\hat{r}_i}$ is large in steep directions and small in flat ones. Dividing gives a per-parameter effective step size that approximates the diagonal of $H^{-1}$ cheaply.
+
+<Callout variant="note" title="Algorithm comparison">
+| Algorithm | Momentum | Adaptive $\eta$ per param | Hyperparams |
+|---|---|---|---|
+| Vanilla GD | no | no | $\eta$ |
+| GD + Momentum | yes | no | $\eta, \mu$ |
+| AdaGrad | no | yes (shrinking) | $\eta$ |
+| RMSProp | no | yes (stable) | $\eta, \beta$ |
+| **Adam** | yes | yes (stable) | $\eta, \beta_1, \beta_2$ |
+
+Start with mini-batch SGD. Switch to Adam when training is unstable or slow to start.
+</Callout>
+
+---
+
+## 11. Learning Rate Schedules
+
+A fixed $\eta$ is rarely optimal for the full training run. Best practice: **start large, finish small**.
+
+- Large $\eta$ early: fast progress, broad exploration of the loss landscape
+- Small $\eta$ late: fine-grained convergence without overshooting the minimum
+
+### Common schedules
+
+Let $\tau$ be the current step, $T$ the total steps:
+
+| Schedule | Formula | Notes |
+|---|---|---|
+| **Linear decay** | $\eta(\tau) = (1 - \tau/K)\,\eta_0 + (\tau/K)\,\eta_K$ | Simple, widely used |
+| **Power law** | $\eta(\tau) = \eta_0 (1 + \tau/s)^{-c}$ | Slower initial decay |
+| **Exponential decay** | $\eta(\tau) = \eta_0 \cdot c^{\tau/s}$ | Aggressive decay |
+| **Cosine annealing** | $\eta(\tau) = \eta_{\min} + \tfrac{1}{2}(\eta_{\max} - \eta_{\min})\!\left(1 + \cos\frac{\tau\pi}{T}\right)$ | Standard for LLMs |
+
+<Callout variant="note" title="Professor says: cosine is the default for LLMs">
+The cosine schedule smoothly interpolates from $\eta_{\max}$ at $\tau = 0$ down to $\eta_{\min}$ at $\tau = T$, following the shape of a cosine curve. No sharp kinks, no tuning of decay rate. It has become the standard for large language model training because it performs well empirically across a wide range of architectures and tasks.
+</Callout>
+
+<Callout variant="note" title="In practice">
+Monitor the training loss curve. Steady decrease: $\eta$ is reasonable. Early plateau: $\eta$ may be too small. Oscillations or increases: $\eta$ is too large. Good schedule hyperparameters are always found empirically.
+</Callout>
+
+---
+
+## 12. How This Material Is Tested
+
+Based on past exams and the professor's explicit statements in lecture, you should be able to do all of the following cold:
+
+1. **Write the MSE loss** for a specific linear model and dataset, fully expanded: no $x_i$ or $y_i$ left, every term shown.
+2. **Compute the gradient symbolically** using the chain rule. Produce a formula, not just a number.
+3. **Evaluate the gradient numerically** at a given $\boldsymbol{\theta}$. Report a vector.
+4. **Take one GD step** and verify the loss decreased.
+5. **Classify a critical point** from the Hessian's eigenvalues: min, max, or saddle.
+6. **Determine convergence given $H$ and $\eta$**: check $|1-\eta\lambda_i| < 1$ for all eigenvalues. If any fail, GD diverges on that direction.
+7. **Identify which $H$ gives fastest convergence**: smallest condition number $\kappa = \lambda_{\max}/\lambda_{\min}$. When $\kappa = 1$ (all eigenvalues equal), GD converges fastest. With $\eta = 1/(2\lambda)$, it converges in exactly one step for a quadratic.
+8. **Bound the learning rate**: given $\lambda_{\max}$, answer is $\eta < 2/\lambda_{\max}$.
+9. **State the condition number** and explain why large $\kappa$ causes slow convergence.
+10. **Explain why momentum or Adam helps** on a described loss surface.
+
+The worked XOR example is the canonical midterm problem. Do it cold on paper.
+
+---
+
+## 13. Exam Prep: Practice Problems
+
+<CollapsibleStep title="Problem 1: Expanded MSE loss">
+Write $J(w_1, w_2, b)$ fully expanded for the XOR dataset.
+
+**Solution.**
+First write the unexpanded form:
+$$J = \tfrac{1}{4}\left[(0-(w_1\cdot0+w_2\cdot0+b))^2 + (1-(w_1\cdot0+w_2\cdot1+b))^2 + (1-(w_1\cdot1+w_2\cdot0+b))^2 + (0-(w_1\cdot1+w_2\cdot1+b))^2\right]$$
+
+Simplify:
+$$J = \tfrac{1}{4}\big[b^2 + (1 - w_2 - b)^2 + (1 - w_1 - b)^2 + (w_1 + w_2 + b)^2\big]$$
+</CollapsibleStep>
+
+<CollapsibleStep title="Problem 2: Why ∂J/∂w₁ = 0 for rows 1 and 2">
+Explain in one sentence.
+
+**Solution.** Both rows have $x_1 = 0$, so the prediction $f = w_1 x_1 + w_2 x_2 + b$ doesn't depend on $w_1$ for those rows: changing $w_1$ cannot change their errors, so their contributions to $\partial J/\partial w_1$ are zero.
+</CollapsibleStep>
+
+<CollapsibleStep title="Problem 3: Numerical gradient at θ = (1, 0, 0)">
+Compute $\nabla J(1, 0, 0)$.
+
+**Solution.**
+$$\nabla J = \begin{bmatrix} \tfrac{1}{2}(2(1) + 0 + 0 - 1) \\ \tfrac{1}{2}(1 + 0 + 0 - 1) \\ 1 + 0 + 0 - 1 \end{bmatrix} = \begin{bmatrix} 1/2 \\ 0 \\ 0 \end{bmatrix}$$
+
+Not a critical point (gradient is nonzero).
+</CollapsibleStep>
+
+<CollapsibleStep title="Problem 4: GD step with η = 1">
+Starting at $(1, 0, 0)$ with $\eta = 1$, compute $\boldsymbol{\theta}^{(1)}$.
+
+**Solution.**
+$$\boldsymbol{\theta}^{(1)} = (1, 0, 0) - 1 \cdot (1/2, 0, 0) = (1/2, 0, 0)$$
+</CollapsibleStep>
+
+<CollapsibleStep title="Problem 5: Classify a critical point">
+At $\mathbf{w}^*$, the Hessian is $H = \begin{bmatrix} 5 & 0 \\ 0 & -3 \end{bmatrix}$. Min, max, or saddle?
+
+**Solution.** Eigenvalues are 5 and $-3$ (the matrix is diagonal, so eigenvalues read off the diagonal). Mixed signs: **saddle point**. Along $\mathbf{u}_1 = (1,0)$ the loss curves up (local min behavior); along $\mathbf{u}_2 = (0,1)$ it curves down (local max behavior).
+</CollapsibleStep>
+
+<CollapsibleStep title="Problem 6: Max safe learning rate">
+Given $\lambda_{\max} = 10$, what is the largest $\eta$ that guarantees convergence?
+
+**Solution.** The convergence condition $|1-\eta\lambda_{\max}| < 1$ gives $\eta < 2/\lambda_{\max} = 0.2$. The optimal (fastest converging) choice is exactly $\eta^* = 0.2$.
+</CollapsibleStep>
+
+<CollapsibleStep title="Problem 7: Condition number and convergence rate">
+A quadratic has $\lambda_{\max} = 100$, $\lambda_{\min} = 0.01$. What is $\kappa$? With the max safe $\eta$, how many steps does the slowest direction take to shrink by $1/e$?
+
+**Solution.** $\kappa = \lambda_{\max}/\lambda_{\min} = 100/0.01 = 10^4$. With $\eta = 2/\lambda_{\max} = 0.02$, the slowest direction decays each step by factor $|1 - 0.02 \times 0.01| = 0.9998$. To reach $1/e \approx 0.368$ of the initial value: $(0.9998)^\tau = e^{-1}$ gives $\tau \approx 1/0.0002 = 5000$ steps. The ill-conditioning bottlenecks the entire optimization.
+</CollapsibleStep>
+
+<CollapsibleStep title="Problem 8: Momentum and flat directions">
+In a flat region where $\nabla J \approx \mathbf{g}$ is constant, derive the effective learning rate with momentum $\mu$.
+
+**Solution.** Unrolling the recursion gives a geometric series:
+$$\Delta\mathbf{w}^{(\infty)} = -\eta\mathbf{g}\sum_{k=0}^\infty \mu^k = -\frac{\eta}{1-\mu}\,\mathbf{g}$$
+
+Effective learning rate: $\eta_{\text{eff}} = \eta/(1-\mu)$. With $\mu = 0.9$: $\eta_{\text{eff}} = 10\eta$.
+</CollapsibleStep>
+
+<CollapsibleStep title="Problem 9: Which H gives fastest convergence? (exam-style)">
+We run gradient descent on $f(\mathbf{w}) = \mathbf{w}^T H \mathbf{w}$ with $\eta = 0.5$. Which $H$ leads to fastest convergence?
+
+**(A)** $H = \begin{bmatrix} 10 & 0 \\ 0 & 10 \end{bmatrix}$ *(B)* $H = \begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}$ **(C)** $H = \begin{bmatrix} 10 & 0 \\ 0 & 0.1 \end{bmatrix}$ **(D)** $H = \begin{bmatrix} 0.1 & 0.1 \\ 0.1 & 0.1 \end{bmatrix}$
+
+**Solution.** Check convergence condition $\eta < 2/\lambda_{\max}$ for each:
+
+- **(A)**: $\lambda_{\max} = 10$. Required $\eta < 2/10 = 0.2$. But $\eta = 0.5 > 0.2$. **Diverges.**
+- **(B)**: $\lambda_{\max} = 1$. Required $\eta < 2/1 = 2$. $\eta = 0.5 < 2$. Convergence factor: $|1 - 0.5 \cdot 2| = 0$. **Converges in exactly 1 step.**
+- **(C)**: $\lambda_{\max} = 10$. Same as (A): $\eta = 0.5 > 0.2$. **Diverges.**
+- **(D)**: Eigenvalues of this rank-1 matrix are 0.2 and 0. Convergence factor along non-zero direction: $|1 - 0.5 \cdot 0.2| = 0.9$. **Converges, but slowly.**
+
+**Answer: (B).** With $H = I$ and $\eta = 0.5$, gradient descent converges in a single step. The key insight: when $\kappa = 1$ (all eigenvalues equal) and $\eta = 1/(2\lambda)$, the GD factor is exactly $(1 - \eta \cdot 2\lambda) = 0$.
+</CollapsibleStep>
+
+---
+
+## 14. Quick Reference
+
+| Quantity | Formula |
+|---|---|
+| GD update | $\mathbf{w}^{(t+1)} = \mathbf{w}^{(t)} - \eta \nabla J(\mathbf{w}^{(t)})$ |
+| MSE loss | $J = \frac{1}{n}\sum_i (y_i - f(\mathbf{x}_i))^2$ |
+| Hessian | $H_{ij} = \partial^2 J / (\partial w_i \partial w_j)$, size $D \times D$, symmetric |
+| Taylor expansion (general) | $J(\hat{\mathbf{w}}) + (\mathbf{w}-\hat{\mathbf{w}})^T \mathbf{b} + \tfrac{1}{2}(\mathbf{w}-\hat{\mathbf{w}})^T H (\mathbf{w}-\hat{\mathbf{w}})$ |
+| Taylor at critical pt | $J(\mathbf{w}^*) + \tfrac{1}{2}(\mathbf{w} - \mathbf{w}^*)^T H (\mathbf{w} - \mathbf{w}^*)$ |
+| Eigendecomp form | $J(\mathbf{w}^*) + \tfrac{1}{2}\sum_i \alpha_i^2 \lambda_i$ |
+| Convergence condition | $\vert 1 - \eta\lambda_i \vert < 1$ for all $i$ |
+| Max safe $\eta$ | $\eta < 2/\lambda_{\max}$ |
+| GD convergence rate | $(1 - \eta\lambda_i)^\tau$ per direction (linear convergence) |
+| Min condition | $\nabla J = \mathbf{0}$ AND $H$ positive definite |
+| Condition number | $\kappa = \lambda_{\max} / \lambda_{\min}$ |
+| Slowest direction rate | $(1 - 2/\kappa)^\tau$ with optimal $\eta$ |
+| Critical point test | all $\lambda_i > 0$: min; all $< 0$: max; mixed: saddle |
+| Momentum update | $\Delta\mathbf{w}^{(\tau)} = -\eta\nabla J + \mu\,\Delta\mathbf{w}^{(\tau-1)}$ |
+| Momentum eff. $\eta$ (flat) | $\eta/(1-\mu)$ |
+| Momentum eff. $\eta$ (oscillating) | $\eta/(1+\mu)$ |
+| SGD justification | mini-batch gradient is unbiased estimate of $\nabla J_{\text{true}}$ |
+| Linear scaling rule | double $B$, double $\eta$ |
+| AdaGrad | $r_i \leftarrow r_i + g_i^2$; update $w_i$ with $\eta/\sqrt{r_i+\epsilon}$ |
+| RMSProp | $r_i \leftarrow \beta r_i + (1-\beta)g_i^2$; same update |
+| Adam first moment | $s_i \leftarrow \beta_1 s_i + (1-\beta_1) g_i$ |
+| Adam second moment | $r_i \leftarrow \beta_2 r_i + (1-\beta_2) g_i^2$ |
+| Adam update | $w_i \leftarrow w_i - \eta\,\hat{s}_i/(\sqrt{\hat{r}_i}+\delta)$ |
+| Cosine schedule | $\eta_{\min} + \tfrac{1}{2}(\eta_{\max}-\eta_{\min})(1+\cos(\tau\pi/T))$ |
+
+**Sources:** Dimakis CS 189 Lecture 15 slides and transcript · Bishop and Bishop Deep Learning Ch. 7 · CS 189 SP25 Midterm
